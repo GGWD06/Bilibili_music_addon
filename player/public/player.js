@@ -50,6 +50,7 @@ const state = {
   activePlaylistId: null,
   editingPlaylistId: null,
   searchQuery: '',
+  trackSourceFilter: 'all', // 'all' | 'both' | 'local-only' | 'cloud-only' | 'missing'
   lbSource: 'all',
   lbSortBy: 'totalPlayCount',
   queueOpen: false,
@@ -75,6 +76,22 @@ const state = {
   pickerTrackKey: null,
   deleteConfirmId: null,
   deleteConfirmTimer: null,
+  gdrive: {
+    connected: false,
+    clientId: '',
+    hasClientSecret: false,
+    folderInput: '',
+    folderId: '',
+    cacheEnabled: true,
+    userEmail: '',
+    displayName: '',
+    lastSyncAt: null,
+    lastError: null,
+    cacheStats: { files: 0, totalBytes: 0 },
+    uploadProgress: { active: false, total: 0, completed: 0, failed: 0, skipped: 0 },
+  },
+  gdriveAuthPollTimer: null,
+  gdriveUploadPollTimer: null,
 };
 
 const els = {};
@@ -141,6 +158,43 @@ async function apiJson(url, options = {}) {
   return res.json();
 }
 
+function isTrackPlayable(track) {
+  return Boolean(
+    track && (track.playable || (track.fileExists && track.filePath) || (track.gdriveExists && track.gdriveFileId))
+  );
+}
+
+function getTrackSourceStatus(track) {
+  const hasLocal = Boolean(track?.fileExists && track?.filePath);
+  const hasCloud = Boolean(track?.gdriveExists && track?.gdriveFileId);
+  if (hasLocal && hasCloud) return 'both';
+  if (hasLocal) return 'local-only';
+  if (hasCloud) return 'cloud-only';
+  return 'missing';
+}
+
+function getSourceBadge(track) {
+  const status = getTrackSourceStatus(track);
+  if (status === 'both') {
+    return { status, label: '本地 + ☁', cls: 'pill-both', title: '本地磁盘与 Google Drive 云端均已存在' };
+  }
+  if (status === 'local-only') {
+    return { status, label: '仅本地', cls: 'pill-local', title: '仅保存在本地磁盘，尚未上传到 Google Drive' };
+  }
+  if (status === 'cloud-only') {
+    return { status, label: '仅云端', cls: 'pill-cloud', title: '仅保存在 Google Drive 云端' };
+  }
+  return { status, label: '未下载', cls: 'pill-muted', title: '仅记录了播放统计，本地与云端均无音频文件' };
+}
+
+function countTrackSources(tracks) {
+  const counts = { all: tracks.length, both: 0, 'local-only': 0, 'cloud-only': 0, missing: 0 };
+  for (const t of tracks) {
+    counts[getTrackSourceStatus(t)] += 1;
+  }
+  return counts;
+}
+
 function getQualityBadge(track) {
   const qid = Number(track?.qualityId);
   if (qid && QUALITY_META[qid]) return QUALITY_META[qid];
@@ -149,10 +203,11 @@ function getQualityBadge(track) {
     if (up.includes('FLAC')) return { label: 'FLAC', cls: 'pill-hires' };
     if (up.includes('EC-3')) return { label: 'Dolby', cls: 'pill-dolby' };
   }
-  return { label: qid ? `${qid}` : '本地音频', cls: 'pill-muted' };
+  const fallbackLabel = !track?.fileExists && track?.gdriveExists ? '云端音频' : '本地音频';
+  return { label: qid ? `${qid}` : fallbackLabel, cls: 'pill-muted' };
 }
 
-function getTracksForView(view = state.activeView, playlistId = state.activePlaylistId) {
+function getBaseTracksForView(view = state.activeView, playlistId = state.activePlaylistId) {
   let list = [];
   if (view === 'favorites') {
     list = state.tracks.filter((t) => t.favorite);
@@ -175,8 +230,14 @@ function getTracksForView(view = state.activeView, playlistId = state.activePlay
   return list;
 }
 
+function getTracksForView(view = state.activeView, playlistId = state.activePlaylistId) {
+  const list = getBaseTracksForView(view, playlistId);
+  if (state.trackSourceFilter === 'all') return list;
+  return list.filter((t) => getTrackSourceStatus(t) === state.trackSourceFilter);
+}
+
 function getPlayableKeys(tracks) {
-  return tracks.filter((t) => t.fileExists && t.filePath).map((t) => t.trackKey);
+  return tracks.filter(isTrackPlayable).map((t) => t.trackKey);
 }
 
 function rebuildQueue({ mode = state.playMode, sourceTracks = null, anchorKey = state.currentTrackKey } = {}) {
@@ -259,8 +320,8 @@ function applyUpdatedTrack(updatedTrack, summary) {
 async function playTrackByKey(trackKey, { pushHistory = true, rebuildFromView = false } = {}) {
   const track = state.trackMap.get(trackKey);
   if (!track) return;
-  if (!track.fileExists || !track.filePath) {
-    showToast('本地音频文件尚未下载或已被移除', 'error');
+  if (!isTrackPlayable(track)) {
+    showToast('音频文件尚未下载且未在云端找到', 'error');
     return;
   }
 
@@ -342,7 +403,7 @@ async function playPrevTrack() {
   while (state.historyStack.length > 0) {
     const prevKey = state.historyStack.pop();
     const t = state.trackMap.get(prevKey);
-    if (t && t.fileExists) {
+    if (isTrackPlayable(t)) {
       await playTrackByKey(prevKey, { pushHistory: false });
       return;
     }
@@ -473,8 +534,37 @@ function renderPlaylistsNav() {
   els.playlistNavList.appendChild(frag);
 }
 
+function renderTrackSourceBar(counts) {
+  if (els.srcCountAll) els.srcCountAll.textContent = String(counts.all || 0);
+  if (els.srcCountBoth) els.srcCountBoth.textContent = String(counts.both || 0);
+  if (els.srcCountLocalOnly) els.srcCountLocalOnly.textContent = String(counts['local-only'] || 0);
+  if (els.srcCountCloudOnly) els.srcCountCloudOnly.textContent = String(counts['cloud-only'] || 0);
+  if (els.srcCountMissing) els.srcCountMissing.textContent = String(counts.missing || 0);
+
+  for (const btn of els.trackSourceButtons || []) {
+    btn.classList.toggle('is-active', (btn.dataset.trackSource || 'all') === state.trackSourceFilter);
+  }
+
+  if (els.trackSourceSummary) {
+    const hints = {
+      all: '点击左侧标签可筛选「本地 + 云端」等存储状态',
+      both: `正在显示同时存在于本地磁盘与 Google Drive 的曲目 (${counts.both || 0} 首)`,
+      'local-only': `正在显示仅保存在本地磁盘、尚未上传云端的曲目 (${counts['local-only'] || 0} 首)`,
+      'cloud-only': `正在显示仅存在于 Google Drive 云端的曲目 (${counts['cloud-only'] || 0} 首)`,
+      missing: `正在显示仅记录统计、本地与云端均暂无文件的曲目 (${counts.missing || 0} 首)`,
+    };
+    els.trackSourceSummary.textContent = hints[state.trackSourceFilter] || hints.all;
+  }
+}
+
 function renderTrackTable() {
-  const list = getTracksForView();
+  const baseList = getBaseTracksForView();
+  const sourceCounts = countTrackSources(baseList);
+  renderTrackSourceBar(sourceCounts);
+
+  const list = state.trackSourceFilter === 'all'
+    ? baseList
+    : baseList.filter((t) => getTrackSourceStatus(t) === state.trackSourceFilter);
 
   if (state.activeView === 'all') {
     els.viewTitle.textContent = '全部音乐';
@@ -486,12 +576,21 @@ function renderTrackTable() {
   }
 
   if (state.activeView !== 'leaderboard') {
-    const playableCount = list.filter((t) => t.fileExists).length;
+    const playableCount = list.filter(isTrackPlayable).length;
     els.viewSubtitle.textContent = `${list.length} 首曲目 · ${playableCount} 首可播放`;
   }
 
   els.trackListBody.replaceChildren();
   if (list.length === 0) {
+    const isFiltered = state.trackSourceFilter !== 'all' || Boolean(state.searchQuery.trim());
+    if (els.tracksEmptyTitle) {
+      els.tracksEmptyTitle.textContent = isFiltered ? '当前筛选条件下暂无曲目' : '当前列表暂无曲目';
+    }
+    if (els.tracksEmptyDesc) {
+      els.tracksEmptyDesc.textContent = isFiltered
+        ? '可切换上方存储来源标签，或清空搜索关键词后查看全部曲目。'
+        : '使用 BiliMusic Chrome 插件下载歌曲至 Downloads/BiliMusic 文件夹，或连接 Google Drive 云端曲库后即可播放。';
+    }
     els.tracksEmpty.classList.remove('is-hidden');
     return;
   }
@@ -501,7 +600,8 @@ function renderTrackTable() {
   list.forEach((track, idx) => {
     const tr = document.createElement('tr');
     const isPlaying = state.currentTrackKey === track.trackKey;
-    tr.className = `track-row${isPlaying ? ' is-playing' : ''}${!track.fileExists ? ' is-missing' : ''}`;
+    const canPlay = isTrackPlayable(track);
+    tr.className = `track-row${isPlaying ? ' is-playing' : ''}${!canPlay ? ' is-missing' : ''}`;
     tr.addEventListener('dblclick', () => {
       playTrackByKey(track.trackKey, { rebuildFromView: true });
     });
@@ -545,19 +645,27 @@ function renderTrackTable() {
     const titleEl = document.createElement('div');
     titleEl.className = 'row-title-text';
     titleEl.textContent = track.title || track.bvid || '未知曲目';
-    titleEl.title = track.filePath || track.title || '';
+    titleEl.title = track.filePath || track.gdriveRelativePath || track.title || '';
 
     const subEl = document.createElement('div');
     subEl.className = 'row-sub-text';
     const parts = [];
     if (track.part && track.part !== track.title) parts.push(`P${track.p || 1} · ${track.part}`);
     if (track.bvid) parts.push(track.bvid);
-    if (!track.fileExists) parts.push('未在本地目录发现文件');
-    subEl.textContent = parts.join(' · ') || (track.relativePath || '本地音频');
+    subEl.textContent = parts.join(' · ') || (track.relativePath || track.gdriveRelativePath || (canPlay ? '音频文件' : '仅统计记录'));
 
     metaWrap.append(titleEl, subEl);
     titleCell.append(thumbWrap, metaWrap);
     tdTitle.appendChild(titleCell);
+
+    // Source (Local / Cloud / Both)
+    const tdSource = document.createElement('td');
+    const sMeta = getSourceBadge(track);
+    const sPill = document.createElement('span');
+    sPill.className = `pill ${sMeta.cls}`;
+    sPill.textContent = sMeta.label;
+    sPill.title = sMeta.title;
+    tdSource.appendChild(sPill);
 
     // Quality
     const tdQuality = document.createElement('td');
@@ -600,9 +708,9 @@ function renderTrackTable() {
     const playBtn = document.createElement('button');
     playBtn.type = 'button';
     playBtn.className = 'btn-icon';
-    playBtn.title = track.fileExists ? '播放此曲' : '暂无本地文件';
+    playBtn.title = canPlay ? (track.fileExists ? '播放此曲' : '在线播放云端曲目') : '暂无本地或云端文件';
     playBtn.textContent = '▶';
-    playBtn.disabled = !track.fileExists;
+    playBtn.disabled = !canPlay;
     playBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       playTrackByKey(track.trackKey, { rebuildFromView: true });
@@ -630,6 +738,20 @@ function renderTrackTable() {
 
     opsBox.append(playBtn, favBtn, addPlBtn);
 
+    if (track.fileExists && track.filePath) {
+      const upBtn = document.createElement('button');
+      upBtn.type = 'button';
+      upBtn.className = 'btn-icon';
+      upBtn.title = track.gdriveExists ? '已备份到 Google Drive（点击可校验覆盖）' : '上传到 Google Drive';
+      upBtn.textContent = track.gdriveExists ? '☁' : '☁↑';
+      upBtn.disabled = Boolean(state.gdrive?.uploadProgress?.active);
+      upBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await uploadSingleTrackToDrive(track.trackKey, upBtn);
+      });
+      opsBox.appendChild(upBtn);
+    }
+
     if (state.activeView === 'playlist' && state.activePlaylistId) {
       const rmBtn = document.createElement('button');
       rmBtn.type = 'button';
@@ -654,7 +776,7 @@ function renderTrackTable() {
     }
 
     tdOps.appendChild(opsBox);
-    tr.append(tdIdx, tdTitle, tdQuality, tdOwner, tdPlays, tdDur, tdOps);
+    tr.append(tdIdx, tdTitle, tdSource, tdQuality, tdOwner, tdPlays, tdDur, tdOps);
     frag.appendChild(tr);
   });
 
@@ -772,10 +894,10 @@ async function refreshLeaderboard() {
     const li = document.createElement('li');
     li.className = 'lb-card';
     li.addEventListener('click', () => {
-      if (item.fileExists) {
+      if (isTrackPlayable(item)) {
         playTrackByKey(item.trackKey, { rebuildFromView: true });
       } else {
-        showToast('该曲目仅在网页端播放过，尚未下载到本地目录', 'info');
+        showToast('该曲目仅在网页端播放过，尚未下载到本地或云端目录', 'info');
       }
     });
 
@@ -803,13 +925,21 @@ async function refreshLeaderboard() {
 
     const info = document.createElement('div');
     info.className = 'lb-info';
+    const titleRow = document.createElement('div');
+    titleRow.className = 'lb-title-row';
     const title = document.createElement('div');
     title.className = 'row-title-text';
     title.textContent = item.title || item.bvid || '未知曲目';
+    const lbSourceBadge = getSourceBadge(item);
+    const lbSourcePill = document.createElement('span');
+    lbSourcePill.className = `pill ${lbSourceBadge.cls}`;
+    lbSourcePill.textContent = lbSourceBadge.label;
+    lbSourcePill.title = lbSourceBadge.title;
+    titleRow.append(title, lbSourcePill);
     const sub = document.createElement('div');
     sub.className = 'row-sub-text';
     sub.textContent = `${item.owner ? `@${item.owner}` : '本地'} · 网页 ${item.biliPlayCount || 0} 次 / 软件 ${item.playerPlayCount || 0} 次`;
-    info.append(title, sub);
+    info.append(titleRow, sub);
 
     const metrics = document.createElement('div');
     metrics.className = 'lb-metrics';
@@ -930,6 +1060,55 @@ function closePlaylistPicker() {
   els.playlistPickerPopover.classList.add('is-hidden');
 }
 
+function formatBytesMb(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderGdriveUi() {
+  const g = state.gdrive || {};
+  const prog = g.uploadProgress || {};
+  const connected = Boolean(g.connected);
+
+  if (els.gdriveDot) {
+    els.gdriveDot.classList.toggle('is-cloud', connected);
+  }
+  if (els.gdriveStatusText) {
+    if (prog.active && prog.total > 0) {
+      const done = (prog.completed || 0) + (prog.failed || 0);
+      const pct = prog.bytesTotal > 0 ? Math.min(100, Math.round(((prog.bytesSent || 0) / prog.bytesTotal) * 100)) : 0;
+      els.gdriveStatusText.textContent = `上传中 ${done}/${prog.total} · ${pct}%`;
+    } else if (connected) {
+      els.gdriveStatusText.textContent = g.userEmail ? `☁ ${g.userEmail}` : '☁ 已连接 Drive';
+    } else {
+      els.gdriveStatusText.textContent = '☁ 云端未连接';
+    }
+  }
+
+  if (els.btnGdriveUploadAll) {
+    els.btnGdriveUploadAll.disabled = Boolean(prog.active);
+    els.btnGdriveUploadAll.textContent = prog.active ? '上传中...' : '☁↑ 上传';
+  }
+
+  if (els.gdriveAuthBadge) {
+    els.gdriveAuthBadge.className = `pill ${connected ? 'pill-cloud' : 'pill-muted'}`;
+    els.gdriveAuthBadge.textContent = connected ? `已连接 · ${g.userEmail || g.displayName || 'Google 账号'}` : '未连接';
+  }
+
+  if (els.gdriveCacheInfo) {
+    const cs = g.cacheStats || {};
+    els.gdriveCacheInfo.textContent = `缓存 ${cs.files || 0} 首 · ${formatBytesMb(cs.totalBytes || 0)}`;
+  }
+
+  if (els.btnGdriveDisconnect) {
+    els.btnGdriveDisconnect.classList.toggle('is-hidden', !connected);
+  }
+  if (els.btnGdriveConnect) {
+    els.btnGdriveConnect.textContent = connected ? '重新授权' : '连接 Google Drive';
+  }
+}
+
 function renderSettingsDrawer() {
   if (document.activeElement !== els.settingMusicDirs) {
     els.settingMusicDirs.value = (state.settings.musicDirs || []).join('\n');
@@ -937,6 +1116,139 @@ function renderSettingsDrawer() {
   if (document.activeElement !== els.settingThreshold) {
     els.settingThreshold.value = String(state.settings.countThresholdSeconds || 15);
   }
+  const g = state.gdrive || {};
+  if (els.settingGdriveClientId && document.activeElement !== els.settingGdriveClientId) {
+    els.settingGdriveClientId.value = g.clientId || '';
+  }
+  if (els.settingGdriveClientSecret && document.activeElement !== els.settingGdriveClientSecret) {
+    els.settingGdriveClientSecret.placeholder = g.hasClientSecret ? '已保存密钥（留空不覆盖）' : 'GOCSPX-...';
+  }
+  if (els.settingGdriveFolder && document.activeElement !== els.settingGdriveFolder) {
+    els.settingGdriveFolder.value = g.folderInput || g.folderId || '';
+  }
+  if (els.settingGdriveCache) {
+    els.settingGdriveCache.checked = g.cacheEnabled !== false;
+  }
+  renderGdriveUi();
+}
+
+async function fetchGdriveStatus() {
+  try {
+    const res = await apiJson('/api/gdrive/status');
+    if (!res?.ok) return;
+    state.gdrive = res;
+    renderSettingsDrawer();
+  } catch (_) {}
+}
+
+function openSettingsForDrive(hintMsg = '请先在下方填写 Client ID 并连接 Google Drive') {
+  els.settingsPanel.classList.remove('is-hidden');
+  els.settingGdriveClientId?.focus();
+  showToast(hintMsg, 'info');
+}
+
+async function syncDriveLibrary() {
+  if (!state.gdrive?.connected) {
+    openSettingsForDrive();
+    return;
+  }
+  els.btnGdriveSync.disabled = true;
+  try {
+    const res = await apiJson('/api/gdrive/sync', { method: 'POST', body: '{}' });
+    if (res?.ok) {
+      if (res.gdrive) state.gdrive = res.gdrive;
+      await fetchLibrary();
+      renderGdriveUi();
+      if (res.scan?.folderMissing) {
+        showToast('云端暂未找到 BiliMusic 目录（上传歌曲时将自动创建）', 'info');
+      } else {
+        showToast(
+          `云端同步完成：${res.scan?.totalFiles || 0} 首（新增 ${res.scan?.added || 0}，匹配 ${res.scan?.matched || 0}）`,
+          'success'
+        );
+      }
+    } else {
+      showToast(res?.error || '云端同步失败', 'error');
+    }
+  } finally {
+    els.btnGdriveSync.disabled = false;
+  }
+}
+
+async function uploadSingleTrackToDrive(trackKey, btnEl) {
+  if (!state.gdrive?.connected) {
+    openSettingsForDrive();
+    return;
+  }
+  const prevText = btnEl ? btnEl.textContent : '';
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = '⏳';
+  }
+  try {
+    const res = await apiJson('/api/gdrive/upload', {
+      method: 'POST',
+      body: JSON.stringify({ trackKey }),
+    });
+    if (res?.ok) {
+      if (res.gdrive) state.gdrive = res.gdrive;
+      if (res.track) applyUpdatedTrack(res.track, res.summary);
+      renderGdriveUi();
+      showToast(res.skippedExisting ? '云端已存在相同文件，已自动关联 ☁' : `已上传到 Google Drive：${res.track?.title || ''}`, 'success');
+    } else {
+      if (btnEl) btnEl.textContent = prevText;
+      showToast(res?.error || '上传失败', 'error');
+    }
+  } catch (_) {
+    if (btnEl) btnEl.textContent = prevText;
+    showToast('上传请求失败', 'error');
+  } finally {
+    if (btnEl) {
+      btnEl.disabled = false;
+    }
+  }
+}
+
+function startUploadProgressPolling() {
+  clearInterval(state.gdriveUploadPollTimer);
+  state.gdriveUploadPollTimer = setInterval(async () => {
+    await fetchGdriveStatus();
+    const prog = state.gdrive?.uploadProgress;
+    if (!prog?.active) {
+      clearInterval(state.gdriveUploadPollTimer);
+      state.gdriveUploadPollTimer = null;
+      await fetchLibrary();
+      const okCount = (prog?.completed || 0);
+      const failCount = (prog?.failed || 0);
+      if (failCount > 0) {
+        showToast(`云端上传结束：成功 ${okCount} 首，失败 ${failCount} 首`, 'error');
+      } else if (okCount > 0) {
+        showToast(`云端上传完成：共 ${okCount} 首已备份到 Google Drive`, 'success');
+      }
+    }
+  }, 850);
+}
+
+async function uploadAllMissingToDrive() {
+  if (!state.gdrive?.connected) {
+    openSettingsForDrive();
+    return;
+  }
+  const res = await apiJson('/api/gdrive/upload', {
+    method: 'POST',
+    body: JSON.stringify({ allMissing: true }),
+  });
+  if (!res?.ok) {
+    showToast(res?.error || '发起批量上传失败', 'error');
+    return;
+  }
+  if (!res.started || res.total === 0) {
+    showToast(res.message || '所有本地曲目均已备份到 Google Drive', 'info');
+    return;
+  }
+  showToast(`开始上传 ${res.total} 首未备份曲目到 Google Drive...`, 'info');
+  await fetchGdriveStatus();
+  startUploadProgressPolling();
 }
 
 async function fetchLibrary() {
@@ -968,6 +1280,10 @@ async function pollServerStatus() {
     const res = await apiJson('/api/status');
     if (!res?.ok) return;
     state.lastExtensionSyncAt = res.lastExtensionSyncAt || state.lastExtensionSyncAt;
+    if (res.gdrive) {
+      state.gdrive = { ...state.gdrive, ...res.gdrive };
+      renderGdriveUi();
+    }
     renderSyncStatus();
     if (res.libraryRevision && res.libraryRevision !== state.libraryRevision) {
       await fetchLibrary();
@@ -979,6 +1295,14 @@ function bindEvents() {
   document.addEventListener('click', (e) => {
     if (!els.playlistPickerPopover.classList.contains('is-hidden') && !els.playlistPickerPopover.contains(e.target)) {
       closePlaylistPicker();
+    }
+    if (
+      els.exportPopover &&
+      !els.exportPopover.classList.contains('is-hidden') &&
+      !els.exportPopover.contains(e.target) &&
+      e.target !== els.btnToggleExport
+    ) {
+      els.exportPopover.classList.add('is-hidden');
     }
   });
 
@@ -1086,10 +1410,88 @@ function bindEvents() {
     }
   });
 
+  for (const btn of els.trackSourceButtons) {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.trackSource || 'all';
+      if (next === state.trackSourceFilter) return;
+      state.trackSourceFilter = next;
+      if (state.activeView !== 'leaderboard') {
+        renderTrackTable();
+      }
+    });
+  }
+
   // 设置面板
   els.btnToggleSettings.addEventListener('click', () => {
     els.settingsPanel.classList.toggle('is-hidden');
   });
+
+  // 导出已下载音乐清单给 AI
+  els.btnToggleExport.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = els.exportPopover.classList.contains('is-hidden');
+    if (willOpen && els.btnToggleExport.getBoundingClientRect) {
+      const rect = els.btnToggleExport.getBoundingClientRect();
+      els.exportPopover.style.left = `${Math.max(12, Math.min(window.innerWidth - 260, rect.right - 248))}px`;
+      els.exportPopover.style.top = `${Math.min(window.innerHeight - 240, rect.bottom + 6)}px`;
+    }
+    els.exportPopover.classList.toggle('is-hidden', !willOpen);
+  });
+
+  async function runPlayerHistoryExport({ download }) {
+    const format = els.exportFormatSelect?.value || 'md';
+    els.btnExportCopy.disabled = true;
+    els.btnExportDownload.disabled = true;
+    try {
+      const res = await apiJson(`/api/export/history?format=${encodeURIComponent(format)}`);
+      if (!res?.ok) {
+        showToast(res?.error || '生成清单失败', 'error');
+        return;
+      }
+      if (res.empty || !res.count) {
+        showToast('当前暂无实际存在的本地或云端音乐', 'info');
+        return;
+      }
+
+      if (download) {
+        const a = document.createElement('a');
+        let objectUrl = null;
+        if (typeof Blob !== 'undefined' && typeof URL?.createObjectURL === 'function') {
+          const blob = new Blob([res.content], { type: 'application/octet-stream' });
+          objectUrl = URL.createObjectURL(blob);
+          a.href = objectUrl;
+        } else {
+          a.href = `/api/export/history?format=${encodeURIComponent(format)}&download=1`;
+        }
+        a.download = res.filename || `BiliMusic-下载历史.${format}`;
+        document.body?.appendChild?.(a);
+        a.click?.();
+        a.remove?.();
+        if (objectUrl) {
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+        }
+        els.exportPopover.classList.add('is-hidden');
+        showToast(`已导出 ${res.count} 首音乐清单: ${res.filename}`, 'success');
+        return;
+      }
+
+      if (globalThis.navigator?.clipboard?.writeText) {
+        try {
+          await globalThis.navigator.clipboard.writeText(res.content);
+          els.exportPopover.classList.add('is-hidden');
+          showToast(`已复制 ${res.count} 首音乐清单，可直接粘贴给 AI`, 'success');
+          return;
+        } catch (_) {}
+      }
+      showToast('剪贴板不可用，请点击「导出文件到电脑」', 'error');
+    } finally {
+      els.btnExportCopy.disabled = false;
+      els.btnExportDownload.disabled = false;
+    }
+  }
+
+  els.btnExportCopy.addEventListener('click', () => runPlayerHistoryExport({ download: false }));
+  els.btnExportDownload.addEventListener('click', () => runPlayerHistoryExport({ download: true }));
 
   els.btnSaveSettings.addEventListener('click', async () => {
     const dirs = els.settingMusicDirs.value
@@ -1107,6 +1509,86 @@ function bindEvents() {
       els.settingsPanel.classList.add('is-hidden');
     } else {
       showToast(res?.error || '保存设置失败', 'error');
+    }
+  });
+
+  // Google Drive 云端设置、OAuth 授权、同步与上传
+  els.btnGdriveSync.addEventListener('click', syncDriveLibrary);
+  els.btnGdriveUploadAll.addEventListener('click', uploadAllMissingToDrive);
+
+  els.btnGdriveSave.addEventListener('click', async () => {
+    const res = await apiJson('/api/gdrive/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        clientId: els.settingGdriveClientId.value.trim(),
+        clientSecret: els.settingGdriveClientSecret.value.trim(),
+        folderInput: els.settingGdriveFolder.value.trim(),
+        cacheEnabled: Boolean(els.settingGdriveCache.checked),
+      }),
+    });
+    if (res?.ok) {
+      if (res.status) state.gdrive = res.status;
+      els.settingGdriveClientSecret.value = '';
+      renderSettingsDrawer();
+      showToast('Google Drive 设置已保存', 'success');
+    } else {
+      showToast(res?.error || '保存 Google Drive 设置失败', 'error');
+    }
+  });
+
+  els.btnGdriveConnect.addEventListener('click', async () => {
+    const res = await apiJson('/api/gdrive/auth/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        clientId: els.settingGdriveClientId.value.trim(),
+        clientSecret: els.settingGdriveClientSecret.value.trim(),
+        folderInput: els.settingGdriveFolder.value.trim(),
+        cacheEnabled: Boolean(els.settingGdriveCache.checked),
+      }),
+    });
+    if (!res?.ok || !res.authUrl) {
+      showToast(res?.error || '生成 Google 登录链接失败', 'error');
+      return;
+    }
+    els.settingGdriveClientSecret.value = '';
+    window.open(res.authUrl, '_blank', 'noopener');
+    showToast('已打开 Google 授权页，请在浏览器完成登录', 'info');
+
+    clearInterval(state.gdriveAuthPollTimer);
+    let checks = 0;
+    state.gdriveAuthPollTimer = setInterval(async () => {
+      checks += 1;
+      await fetchGdriveStatus();
+      if (state.gdrive?.connected) {
+        clearInterval(state.gdriveAuthPollTimer);
+        state.gdriveAuthPollTimer = null;
+        showToast('Google Drive 授权成功，正在同步曲库...', 'success');
+        await syncDriveLibrary();
+      } else if (checks >= 80) {
+        clearInterval(state.gdriveAuthPollTimer);
+        state.gdriveAuthPollTimer = null;
+      }
+    }, 1500);
+  });
+
+  els.btnGdriveDisconnect.addEventListener('click', async () => {
+    const res = await apiJson('/api/gdrive/auth/disconnect', { method: 'POST', body: '{}' });
+    if (res?.ok) {
+      if (res.gdrive) state.gdrive = res.gdrive;
+      await fetchLibrary();
+      renderSettingsDrawer();
+      showToast('已断开 Google Drive 账号', 'info');
+    }
+  });
+
+  els.btnGdriveClearCache.addEventListener('click', async () => {
+    const res = await apiJson('/api/gdrive/cache/clear', { method: 'POST', body: '{}' });
+    if (res?.ok) {
+      if (res.gdrive) state.gdrive = res.gdrive;
+      renderSettingsDrawer();
+      showToast(`已清理 ${res.clearedFiles || 0} 个缓存文件（释放 ${formatBytesMb(res.freedBytes || 0)}）`, 'success');
+    } else {
+      showToast(res?.error || '清理缓存失败', 'error');
     }
   });
 
@@ -1269,6 +1751,20 @@ function init() {
   els.syncStatusDot = $('sync-status-dot');
   els.syncStatusText = $('sync-status-text');
   els.btnRescan = $('btn-rescan');
+  els.gdriveDot = $('gdrive-dot');
+  els.gdriveStatusText = $('gdrive-status-text');
+  els.btnGdriveSync = $('btn-gdrive-sync');
+  els.btnGdriveUploadAll = $('btn-gdrive-upload-all');
+  els.gdriveAuthBadge = $('gdrive-auth-badge');
+  els.gdriveCacheInfo = $('gdrive-cache-info');
+  els.settingGdriveClientId = $('setting-gdrive-client-id');
+  els.settingGdriveClientSecret = $('setting-gdrive-client-secret');
+  els.settingGdriveFolder = $('setting-gdrive-folder');
+  els.settingGdriveCache = $('setting-gdrive-cache');
+  els.btnGdriveSave = $('btn-gdrive-save');
+  els.btnGdriveConnect = $('btn-gdrive-connect');
+  els.btnGdriveDisconnect = $('btn-gdrive-disconnect');
+  els.btnGdriveClearCache = $('btn-gdrive-clear-cache');
   els.navItems = Array.from(document.querySelectorAll('.nav-item'));
   els.countAll = $('count-all');
   els.countFav = $('count-fav');
@@ -1285,6 +1781,7 @@ function init() {
   els.btnShuffleList = $('btn-shuffle-list');
   els.btnShuffleAll = $('btn-shuffle-all');
   els.searchInput = $('search-input');
+  els.btnToggleExport = $('btn-toggle-export');
   els.btnToggleSettings = $('btn-toggle-settings');
   els.settingsPanel = $('settings-panel');
   els.settingMusicDirs = $('setting-music-dirs');
@@ -1292,7 +1789,16 @@ function init() {
   els.btnSaveSettings = $('btn-save-settings');
 
   els.viewTracks = $('view-tracks');
+  els.trackSourceButtons = Array.from(document.querySelectorAll('.track-source-btn'));
+  els.srcCountAll = $('src-count-all');
+  els.srcCountBoth = $('src-count-both');
+  els.srcCountLocalOnly = $('src-count-local-only');
+  els.srcCountCloudOnly = $('src-count-cloud-only');
+  els.srcCountMissing = $('src-count-missing');
+  els.trackSourceSummary = $('track-source-summary');
   els.tracksEmpty = $('tracks-empty');
+  els.tracksEmptyTitle = $('tracks-empty-title');
+  els.tracksEmptyDesc = $('tracks-empty-desc');
   els.trackListBody = $('track-list-body');
 
   els.viewLeaderboard = $('view-leaderboard');
@@ -1333,6 +1839,10 @@ function init() {
 
   els.playlistPickerPopover = $('playlist-picker-popover');
   els.playlistPickerList = $('playlist-picker-list');
+  els.exportPopover = $('export-popover');
+  els.exportFormatSelect = $('export-format-select');
+  els.btnExportCopy = $('btn-export-copy');
+  els.btnExportDownload = $('btn-export-download');
   els.toast = $('toast');
   els.audioEl = $('audio-el');
   els.audioEl.volume = Number(els.volumeBar.value) || 0.85;
@@ -1340,6 +1850,7 @@ function init() {
   bindEvents();
   renderPlayModeButton();
   fetchLibrary();
+  fetchGdriveStatus();
 }
 
 document.addEventListener('DOMContentLoaded', init);

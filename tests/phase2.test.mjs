@@ -295,76 +295,86 @@ test('service-worker.js: concurrent heartbeats count playCount once and update l
   globalThis.indexedDB = createMiniMockIdb();
   const sessionStorage = createStorageArea();
   const localStorage = createStorageArea();
+  await localStorage.set({ settings: { enablePlayerSync: false } });
   const badgeUpdates = [];
-
-  globalThis.chrome = {
-    storage: { session: sessionStorage, local: localStorage },
-    action: {
-      setBadgeText: async (v) => badgeUpdates.push(v),
-      setBadgeBackgroundColor: async (v) => badgeUpdates.push(v),
-    },
-    tabs: {
-      query: async () => [{ id: 42 }],
-      onRemoved: { addListener: () => {} },
-    },
-    runtime: {
-      onMessage: { addListener: () => {} },
-      onInstalled: { addListener: () => {} },
-      onStartup: { addListener: () => {} },
-      sendMessage: async () => ({}),
-    },
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    throw new Error(`Network disabled in unit test: ${url}`);
   };
 
-  const sw = await import('../src/background/service-worker.js');
-  const { getLeaderboard } = await import('../src/common/db.js');
+  try {
+    globalThis.chrome = {
+      storage: { session: sessionStorage, local: localStorage },
+      action: {
+        setBadgeText: async (v) => badgeUpdates.push(v),
+        setBadgeBackgroundColor: async (v) => badgeUpdates.push(v),
+      },
+      tabs: {
+        query: async () => [{ id: 42 }],
+        onRemoved: { addListener: () => {} },
+      },
+      runtime: {
+        onMessage: { addListener: () => {} },
+        onInstalled: { addListener: () => {} },
+        onStartup: { addListener: () => {} },
+        sendMessage: async () => ({}),
+      },
+    };
 
-  const meta = { bvid: 'BV1swTest', cid: '777', p: 1, totalParts: 1, title: 'SW Track', owner: 'Singer' };
-  const sender = { tab: { id: 42 } };
-  const sessionId = 'BV1swTest_777_sess1';
+    const sw = await import('../src/background/service-worker.js');
+    const { getLeaderboard } = await import('../src/common/db.js');
 
-  // 上报检测
-  const det = await sw.handleTrackDetected({
-    meta,
-    sessionId,
-    matched: true,
-    source: '__playinfo__',
-    audios: [{ id: 30280, codecs: 'mp4a.40.2', bandwidth: 240000, baseUrl: 'https://cdn/a' }],
-  }, sender);
-  assert.equal(det.ok, true);
-  assert.equal(det.tabState.qualityInfo.id, 30280);
+    const meta = { bvid: 'BV1swTest', cid: '777', p: 1, totalParts: 1, title: 'SW Track', owner: 'Singer' };
+    const sender = { tab: { id: 42 } };
+    const sessionId = 'BV1swTest_777_sess1';
 
-  // 并发发送多次心跳跨越 15 秒阈值，验证 withTabQueue 防止 playCount 被计成 >1
-  const [r1, r2, r3] = await Promise.all([
-    sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
-    sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
-    sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
-  ]);
-  const thresholdTriggers = [r1, r2, r3].filter((r) => r.reachedThresholdNow);
-  assert.equal(thresholdTriggers.length, 1, 'Threshold should trigger exactly once under concurrent heartbeats');
-  assert.equal(r3.tabState.trackStats.playCount, 1);
-  assert.equal(r3.tabState.trackStats.totalPlayedSeconds, 18);
+    // 上报检测
+    const det = await sw.handleTrackDetected({
+      meta,
+      sessionId,
+      matched: true,
+      source: '__playinfo__',
+      audios: [{ id: 30280, codecs: 'mp4a.40.2', bandwidth: 240000, baseUrl: 'https://cdn/a' }],
+    }, sender);
+    assert.equal(det.ok, true);
+    assert.equal(det.tabState.qualityInfo.id, 30280);
 
-  // 切换为暂停模式后心跳应被忽略
-  const modeRes = await sw.handleSetWorkMode({ mode: 'PAUSED' });
-  assert.equal(modeRes.settings.mode, 'PAUSED');
-  assert.ok(badgeUpdates.some((b) => b.text === 'OFF'));
+    // 并发发送多次心跳跨越 15 秒阈值，验证 withTabQueue 防止 playCount 被计成 >1
+    const [r1, r2, r3] = await Promise.all([
+      sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
+      sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
+      sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 6 }, sender),
+    ]);
+    const thresholdTriggers = [r1, r2, r3].filter((r) => r.reachedThresholdNow);
+    assert.equal(thresholdTriggers.length, 1, 'Threshold should trigger exactly once under concurrent heartbeats');
+    assert.equal(r3.tabState.trackStats.playCount, 1);
+    assert.equal(r3.tabState.trackStats.totalPlayedSeconds, 18);
 
-  const pausedHb = await sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 10 }, sender);
-  assert.equal(pausedHb.ignored, 'paused');
+    // 切换为暂停模式后心跳应被忽略
+    const modeRes = await sw.handleSetWorkMode({ mode: 'PAUSED' });
+    assert.equal(modeRes.settings.mode, 'PAUSED');
+    assert.ok(badgeUpdates.some((b) => b.text === 'OFF'));
 
-  // Popup 恢复状态 & 排行榜校验
-  const popupState = await sw.handleGetPopupState({});
-  assert.equal(popupState.tabId, 42);
-  assert.equal(popupState.tabState.trackStats.totalPlayedSeconds, 18);
+    const pausedHb = await sw.handlePlayHeartbeat({ meta, sessionId, deltaSeconds: 10 }, sender);
+    assert.equal(pausedHb.ignored, 'paused');
 
-  const board = await getLeaderboard();
-  assert.equal(board.items[0].bvid, 'BV1swTest');
-  assert.equal(board.items[0].playCount, 1);
+    // Popup 恢复状态 & 排行榜校验
+    const popupState = await sw.handleGetPopupState({});
+    assert.equal(popupState.tabId, 42);
+    assert.equal(popupState.tabState.trackStats.totalPlayedSeconds, 18);
 
-  // 清空统计
-  await sw.handleClearStats();
-  const afterClear = await sw.handleGetPopupState({ tabId: 42 });
-  assert.equal(afterClear.tabState.trackStats.playCount, 0);
+    const board = await getLeaderboard();
+    assert.equal(board.items[0].bvid, 'BV1swTest');
+    assert.equal(board.items[0].playCount, 1);
+
+    // 清空统计
+    await sw.handleClearStats();
+    const afterClear = await sw.handleGetPopupState({ tabId: 42 });
+    assert.equal(afterClear.tabState.trackStats.playCount, 0);
+  } finally {
+    await new Promise((r) => setTimeout(r, 20));
+    globalThis.fetch = prevFetch;
+  }
 });
 
 // ============================================================================

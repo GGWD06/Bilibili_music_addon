@@ -28,6 +28,17 @@
           <button id="btn-rescan" type="button" class="btn-ghost btn-sm" title="扫描本地下载目录">刷新曲库</button>
         </div>
 
+        <div class="sync-panel cloud-panel">
+          <div class="sync-status-row">
+            <span id="gdrive-dot" class="sync-dot"></span>
+            <span id="gdrive-status-text" class="sync-label">云端未连接</span>
+          </div>
+          <div class="cloud-panel-ops">
+            <button id="btn-gdrive-sync" type="button" class="btn-ghost btn-xs" title="同步 Google Drive 曲库">☁ 同步</button>
+            <button id="btn-gdrive-upload-all" type="button" class="btn-ghost btn-xs" title="将未备份的本地曲目上传到 Google Drive">☁↑ 上传</button>
+          </div>
+        </div>
+
         <nav class="nav-section" aria-label="音乐库视图">
           <div class="nav-heading">音乐库</div>
           <button type="button" class="nav-item is-active" data-view="all">
@@ -79,6 +90,7 @@
             <div class="search-wrap">
               <input id="search-input" type="search" placeholder="搜索歌名 / UP主 / BV号..." class="input-dark search-input" />
             </div>
+            <button id="btn-toggle-export" type="button" class="btn-ghost btn-sm" title="导出已下载音乐清单给 AI 查重">📋 导出清单</button>
             <button id="btn-toggle-settings" type="button" class="btn-ghost btn-sm" title="播放器设置">⚙ 设置</button>
           </div>
         </header>
@@ -98,14 +110,79 @@
               <button id="btn-save-settings" type="button" class="btn-primary btn-sm">保存并重新扫描</button>
             </div>
           </div>
+
+          <div class="settings-divider"></div>
+
+          <div class="gdrive-settings-block">
+            <div class="gdrive-header-row">
+              <div class="gdrive-title-wrap">
+                <span class="gdrive-title">☁ Google Drive 私人云端曲库</span>
+                <span id="gdrive-auth-badge" class="pill pill-muted">未连接</span>
+                <span id="gdrive-cache-info" class="gdrive-cache-info mono">缓存 0 首 · 0 MB</span>
+              </div>
+              <details class="gdrive-help">
+                <summary>如何获取个人 Client ID（免费免审计）？</summary>
+                <p>1. 打开 Google Cloud Console 创建项目并启用 <strong>Google Drive API</strong>；<br />2. OAuth 同意屏幕选 External（测试模式填自己/朋友 Gmail 为测试用户，或自己点 In Production 免 7 天重登）；<br />3. 在 Credentials 创建 <strong>Desktop app（桌面应用）</strong> OAuth 客户端，把 Client ID 与 Client Secret 填入下方后点「连接 Google Drive」。</p>
+              </details>
+            </div>
+
+            <div class="gdrive-fields-grid">
+              <label class="setting-field" for="setting-gdrive-client-id">
+                <span class="setting-label">OAuth Client ID</span>
+                <input id="setting-gdrive-client-id" type="text" placeholder="xxx.apps.googleusercontent.com" class="input-dark mono" />
+              </label>
+              <label class="setting-field" for="setting-gdrive-client-secret">
+                <span class="setting-label">OAuth Client Secret（桌面应用需填写；已保存可留空）</span>
+                <input id="setting-gdrive-client-secret" type="password" placeholder="GOCSPX-..." class="input-dark mono" />
+              </label>
+              <label class="setting-field" for="setting-gdrive-folder">
+                <span class="setting-label">云端文件夹链接或 Folder ID（留空自动查找/创建根目录 BiliMusic）</span>
+                <input id="setting-gdrive-folder" type="text" placeholder="https://drive.google.com/drive/folders/..." class="input-dark mono" />
+              </label>
+            </div>
+
+            <div class="gdrive-actions-row">
+              <label class="gdrive-check-label" for="setting-gdrive-cache">
+                <input id="setting-gdrive-cache" type="checkbox" checked />
+                <span>播放云端曲目时自动缓存至本地（上限 2GB，下次秒播）</span>
+              </label>
+              <div class="gdrive-btn-group">
+                <button id="btn-gdrive-save" type="button" class="btn-ghost btn-sm">保存云端设置</button>
+                <button id="btn-gdrive-connect" type="button" class="btn-primary btn-sm">连接 Google Drive</button>
+                <button id="btn-gdrive-disconnect" type="button" class="btn-ghost btn-sm is-hidden">断开账号</button>
+                <button id="btn-gdrive-clear-cache" type="button" class="btn-ghost btn-sm">清理缓存</button>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- 曲目列表视图 -->
         <section id="view-tracks" class="content-panel is-active">
+          <div class="tracks-toolbar">
+            <div id="track-source-pills" class="source-pills" role="group" aria-label="存储来源筛选">
+              <button type="button" class="track-source-btn is-active" data-track-source="all">
+                全部 <span id="src-count-all" class="pill-count mono">0</span>
+              </button>
+              <button type="button" class="track-source-btn" data-track-source="both">
+                本地 + 云端 <span id="src-count-both" class="pill-count mono">0</span>
+              </button>
+              <button type="button" class="track-source-btn" data-track-source="local-only">
+                仅本地 <span id="src-count-local-only" class="pill-count mono">0</span>
+              </button>
+              <button type="button" class="track-source-btn" data-track-source="cloud-only">
+                仅云端 <span id="src-count-cloud-only" class="pill-count mono">0</span>
+              </button>
+              <button type="button" class="track-source-btn" data-track-source="missing">
+                未下载 <span id="src-count-missing" class="pill-count mono">0</span>
+              </button>
+            </div>
+            <span id="track-source-summary" class="tracks-toolbar-hint"></span>
+          </div>
+
           <div id="tracks-empty" class="empty-state is-hidden">
             <div class="empty-icon">♫</div>
-            <h3 class="empty-title">当前列表暂无曲目</h3>
-            <p class="empty-desc">使用 BiliMusic Chrome 插件下载歌曲至 Downloads/BiliMusic 文件夹后，这里会自动扫描入库并与网页端播放统计双向联动。</p>
+            <h3 id="tracks-empty-title" class="empty-title">当前列表暂无曲目</h3>
+            <p id="tracks-empty-desc" class="empty-desc">使用 BiliMusic Chrome 插件下载歌曲至 Downloads/BiliMusic 文件夹后，这里会自动扫描入库并与网页端播放统计双向联动。</p>
           </div>
 
           <div class="table-scroll">
@@ -114,6 +191,7 @@
                 <tr>
                   <th class="col-idx">#</th>
                   <th class="col-title">曲目 / 分P</th>
+                  <th class="col-source">来源</th>
                   <th class="col-quality">音质</th>
                   <th class="col-owner">UP主</th>
                   <th class="col-plays">联动播放次数 (网页+软件)</th>
@@ -233,6 +311,22 @@
     <div id="playlist-picker-popover" class="popover is-hidden" role="dialog" aria-label="添加到歌单">
       <div class="popover-title">添加到歌单</div>
       <ul id="playlist-picker-list" class="popover-list"></ul>
+    </div>
+
+    <!-- 导出已下载音乐清单浮动菜单 -->
+    <div id="export-popover" class="popover export-popover is-hidden" role="dialog" aria-label="导出已下载音乐清单">
+      <div class="popover-title">导出下载音乐清单 (发给 AI)</div>
+      <div class="export-popover-body">
+        <label class="export-format-label" for="export-format-select">导出格式</label>
+        <select id="export-format-select" class="input-dark select-sm">
+          <option value="md">Markdown (.md · 推荐给AI)</option>
+          <option value="json">JSON (.json · 结构化)</option>
+          <option value="csv">CSV (.csv · Excel表格)</option>
+        </select>
+        <button id="btn-export-copy" type="button" class="btn-accent btn-sm">📋 复制给 AI 查重</button>
+        <button id="btn-export-download" type="button" class="btn-primary btn-sm">⬇ 导出文件到电脑</button>
+        <p class="export-popover-note">仅导出当前实际存在的本地与云端音乐，不含已删除或未下载视频。</p>
+      </div>
     </div>
 
     <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>

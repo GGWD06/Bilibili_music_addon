@@ -299,6 +299,10 @@ test('service-worker: end-to-end auto capture at threshold, manual capture in ST
   globalThis.indexedDB = createMiniMockIdb();
   const sessionStorage = createStorageArea();
   const localStorage = createStorageArea();
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    throw new Error(`Network disabled in unit test: ${url}`);
+  };
 
   const iconCalls = [];
   const badgeCalls = [];
@@ -306,124 +310,184 @@ test('service-worker: end-to-end auto capture at threshold, manual capture in ST
   const downloadRecords = new Map();
   let nextDlId = 500;
 
-  globalThis.chrome = {
-    storage: { session: sessionStorage, local: localStorage },
-    action: {
-      setIcon: async (v) => iconCalls.push(v),
-      setBadgeText: async (v) => badgeCalls.push(v),
-      setBadgeBackgroundColor: async (v) => badgeCalls.push(v),
-    },
-    downloads: {
-      onChanged: { addListener: () => {} },
-      async download(opts) {
-        nextDlId += 1;
-        const id = nextDlId;
-        downloadRecords.set(id, { id, state: 'complete', exists: true, filename: `D:\\Downloads\\${opts.filename}` });
-        return id;
+  try {
+    globalThis.chrome = {
+      storage: { session: sessionStorage, local: localStorage },
+      action: {
+        setIcon: async (v) => iconCalls.push(v),
+        setBadgeText: async (v) => badgeCalls.push(v),
+        setBadgeBackgroundColor: async (v) => badgeCalls.push(v),
       },
-      async search({ id }) {
-        return downloadRecords.has(id) ? [downloadRecords.get(id)] : [];
+      downloads: {
+        onChanged: { addListener: () => {} },
+        async download(opts) {
+          nextDlId += 1;
+          const id = nextDlId;
+          downloadRecords.set(id, { id, state: 'complete', exists: true, filename: `D:\\Downloads\\${opts.filename}` });
+          return id;
+        },
+        async search({ id }) {
+          return downloadRecords.has(id) ? [downloadRecords.get(id)] : [];
+        },
+        async removeFile() {},
+        async erase() {},
       },
-      async removeFile() {},
-      async erase() {},
-    },
-    tabs: {
-      query: async () => [{ id: 88 }],
-      onRemoved: { addListener: () => {} },
-      sendMessage: async (tabId, env) => {
-        tabMessages.push({ tabId, env });
-        return { ok: true, accepted: true };
+      tabs: {
+        query: async () => [{ id: 88 }],
+        onRemoved: { addListener: () => {} },
+        sendMessage: async (tabId, env) => {
+          tabMessages.push({ tabId, env });
+          return { ok: true, accepted: true };
+        },
       },
-    },
-    runtime: {
-      onMessage: { addListener: () => {} },
-      onInstalled: { addListener: () => {} },
-      onStartup: { addListener: () => {} },
-      sendMessage: async () => ({}),
-    },
-  };
+      runtime: {
+        onMessage: { addListener: () => {} },
+        onInstalled: { addListener: () => {} },
+        onStartup: { addListener: () => {} },
+        sendMessage: async () => ({}),
+      },
+    };
 
-  const sw = await import('../src/background/service-worker.js');
-  const { getTrack } = await import('../src/common/db.js');
+    const sw = await import('../src/background/service-worker.js');
+    const { getTrack } = await import('../src/common/db.js');
 
-  // 0) 校验默认开箱模式为 STATS_ONLY（不自动下载）
-  const initialSettings = await sw.getSettings();
-  assert.equal(initialSettings.mode, WORK_MODE.STATS_ONLY, 'Default mode must be STATS_ONLY to prevent unwanted auto-downloads');
+    // 0) 校验默认开箱模式为 STATS_ONLY（不自动下载）
+    const initialSettings = await sw.getSettings();
+    assert.equal(initialSettings.mode, WORK_MODE.STATS_ONLY, 'Default mode must be STATS_ONLY to prevent unwanted auto-downloads');
 
-  // 1) 三态切换校验 iconPaths 与角标
-  await sw.handleSetWorkMode({ mode: WORK_MODE.STATS_ONLY });
-  assert.deepEqual(iconCalls.at(-1).path, MODE_UI_META[WORK_MODE.STATS_ONLY].iconPaths);
-  assert.equal(badgeCalls.at(-2).text, 'STAT');
+    // 1) 三态切换校验 iconPaths 与角标
+    await sw.handleSetWorkMode({ mode: WORK_MODE.STATS_ONLY });
+    assert.deepEqual(iconCalls.at(-1).path, MODE_UI_META[WORK_MODE.STATS_ONLY].iconPaths);
+    assert.equal(badgeCalls.at(-2).text, 'STAT');
 
-  await sw.handleSetWorkMode({ mode: WORK_MODE.AUTO_CAPTURE });
-  assert.deepEqual(iconCalls.at(-1).path, MODE_UI_META[WORK_MODE.AUTO_CAPTURE].iconPaths);
+    await sw.handleSetWorkMode({ mode: WORK_MODE.AUTO_CAPTURE });
+    assert.deepEqual(iconCalls.at(-1).path, MODE_UI_META[WORK_MODE.AUTO_CAPTURE].iconPaths);
 
-  // 2) 上报曲目并累积心跳突破 15s -> AUTO_CAPTURE 自动发 FETCH_DASH_BLOB
-  const metaA = { bvid: 'BV1swP3A', cid: '9001', p: 1, totalParts: 1, title: 'Auto Song', owner: 'Singer A' };
-  const sessA = 'BV1swP3A_9001_s1';
-  const sender = { tab: { id: 88 } };
+    // 2) 上报曲目并累积心跳突破 15s -> AUTO_CAPTURE 自动发 FETCH_DASH_BLOB
+    const metaA = { bvid: 'BV1swP3A', cid: '9001', p: 1, totalParts: 1, title: 'Auto Song', owner: 'Singer A' };
+    const sessA = 'BV1swP3A_9001_s1';
+    const sender = { tab: { id: 88 } };
 
-  await sw.handleTrackDetected({
-    meta: metaA,
-    sessionId: sessA,
-    matched: true,
-    source: '__playinfo__',
-    audios: [{ id: 30280, codecs: 'mp4a.40.2', bandwidth: 192000, baseUrl: 'https://cdn/auto' }],
-  }, sender);
+    await sw.handleTrackDetected({
+      meta: metaA,
+      sessionId: sessA,
+      matched: true,
+      source: '__playinfo__',
+      audios: [{ id: 30280, codecs: 'mp4a.40.2', bandwidth: 192000, baseUrl: 'https://cdn/auto' }],
+    }, sender);
 
-  const hbRes = await sw.handlePlayHeartbeat({ meta: metaA, sessionId: sessA, deltaSeconds: 16 }, sender);
-  assert.equal(hbRes.reachedThresholdNow, true);
-  assert.equal(hbRes.tabState.downloadStatus, DOWNLOAD_STATUS.DOWNLOADING);
+    const hbRes = await sw.handlePlayHeartbeat({ meta: metaA, sessionId: sessA, deltaSeconds: 16 }, sender);
+    assert.equal(hbRes.reachedThresholdNow, true);
+    assert.equal(hbRes.tabState.downloadStatus, DOWNLOAD_STATUS.DOWNLOADING);
 
-  const fetchCmdA = tabMessages.find((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3A_9001');
-  assert.ok(fetchCmdA, 'AUTO_CAPTURE reaching threshold must send FETCH_DASH_BLOB to active tab');
+    const fetchCmdA = tabMessages.find((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3A_9001');
+    assert.ok(fetchCmdA, 'AUTO_CAPTURE reaching threshold must send FETCH_DASH_BLOB to active tab');
 
-  // 页面回传 DASH_BLOB_READY -> 自动完结并释放 Blob URL
-  const readyRes = await sw.downloader.handleDashBlobReady(
-    { taskId: fetchCmdA.env.payload.taskId, blobUrl: 'blob:https://www.bilibili.com/auto-done' },
-    sender
-  );
-  assert.equal(readyRes.ok, true);
+    // 页面回传 DASH_BLOB_READY -> 自动完结并释放 Blob URL
+    const readyRes = await sw.downloader.handleDashBlobReady(
+      { taskId: fetchCmdA.env.payload.taskId, blobUrl: 'blob:https://www.bilibili.com/auto-done' },
+      sender
+    );
+    assert.equal(readyRes.ok, true);
 
-  const savedA = await getTrack('BV1swP3A_9001');
-  assert.ok(savedA.downloadId);
-  assert.equal(savedA.qualityId, 30280);
-  assert.ok(
-    tabMessages.some((m) => m.env.action === ACTION.REVOKE_BLOB_URL && m.env.payload.blobUrl === 'blob:https://www.bilibili.com/auto-done')
-  );
+    const savedA = await getTrack('BV1swP3A_9001');
+    assert.ok(savedA.downloadId);
+    assert.equal(savedA.qualityId, 30280);
+    assert.ok(
+      tabMessages.some((m) => m.env.action === ACTION.REVOKE_BLOB_URL && m.env.payload.blobUrl === 'blob:https://www.bilibili.com/auto-done')
+    );
 
-  // 3) STATS_ONLY 下听满阈值仅统计不下载，点击手动立即下载可触发
-  await sw.handleSetWorkMode({ mode: WORK_MODE.STATS_ONLY });
-  const metaB = { bvid: 'BV1swP3B', cid: '9002', p: 1, totalParts: 1, title: 'Manual Song', owner: 'Singer B' };
-  const sessB = 'BV1swP3B_9002_s1';
+    // 3) STATS_ONLY 下听满阈值仅统计不下载，点击手动立即下载可触发
+    await sw.handleSetWorkMode({ mode: WORK_MODE.STATS_ONLY });
+    const metaB = { bvid: 'BV1swP3B', cid: '9002', p: 1, totalParts: 1, title: 'Manual Song', owner: 'Singer B' };
+    const sessB = 'BV1swP3B_9002_s1';
 
-  await sw.handleTrackDetected({
-    meta: metaB,
-    sessionId: sessB,
-    matched: true,
-    source: '__playinfo__',
-    audios: [{ id: 30251, codecs: 'flac', bandwidth: 1100000, baseUrl: 'https://cdn/manual-flac' }],
-  }, sender);
+    await sw.handleTrackDetected({
+      meta: metaB,
+      sessionId: sessB,
+      matched: true,
+      source: '__playinfo__',
+      audios: [{ id: 30251, codecs: 'flac', bandwidth: 1100000, baseUrl: 'https://cdn/manual-flac' }],
+    }, sender);
 
-  const hbStatsOnly = await sw.handlePlayHeartbeat({ meta: metaB, sessionId: sessB, deltaSeconds: 20 }, sender);
-  assert.equal(hbStatsOnly.reachedThresholdNow, true);
-  assert.equal(hbStatsOnly.tabState.downloadStatus, DOWNLOAD_STATUS.IDLE);
-  assert.equal(
-    tabMessages.some((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3B_9002'),
-    false,
-    'STATS_ONLY must not trigger automatic download'
-  );
+    const hbStatsOnly = await sw.handlePlayHeartbeat({ meta: metaB, sessionId: sessB, deltaSeconds: 20 }, sender);
+    assert.equal(hbStatsOnly.reachedThresholdNow, true);
+    assert.equal(hbStatsOnly.tabState.downloadStatus, DOWNLOAD_STATUS.IDLE);
+    assert.equal(
+      tabMessages.some((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3B_9002'),
+      false,
+      'STATS_ONLY must not trigger automatic download'
+    );
 
-  const manualRes = await sw.handleManualDownload({ tabId: 88 });
-  assert.equal(manualRes.ok, true);
-  const fetchCmdB = tabMessages.find((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3B_9002');
-  assert.ok(fetchCmdB, 'Manual download must dispatch FETCH_DASH_BLOB even in STATS_ONLY mode');
+    const manualRes = await sw.handleManualDownload({ tabId: 88 });
+    assert.equal(manualRes.ok, true);
+    const fetchCmdB = tabMessages.find((m) => m.env.action === ACTION.FETCH_DASH_BLOB && m.env.payload.trackKey === 'BV1swP3B_9002');
+    assert.ok(fetchCmdB, 'Manual download must dispatch FETCH_DASH_BLOB even in STATS_ONLY mode');
 
-  await sw.downloader.handleDashBlobReady(
-    { taskId: fetchCmdB.env.payload.taskId, blobUrl: 'blob:https://www.bilibili.com/manual-done' },
-    sender
-  );
-  const popupState = await sw.handleGetPopupState({ tabId: 88 });
-  assert.equal(popupState.tabState.downloadStatus, DOWNLOAD_STATUS.COMPLETED);
-  assert.equal(popupState.dbTrack.qualityId, 30251);
+    await sw.downloader.handleDashBlobReady(
+      { taskId: fetchCmdB.env.payload.taskId, blobUrl: 'blob:https://www.bilibili.com/manual-done' },
+      sender
+    );
+    const popupState = await sw.handleGetPopupState({ tabId: 88 });
+    assert.equal(popupState.tabState.downloadStatus, DOWNLOAD_STATUS.COMPLETED);
+    assert.equal(popupState.dbTrack.qualityId, 30251);
+
+    // 4) 导出已下载音乐清单：仅导出本地/云端仍存活曲目，自动跳过已删除文件与仅统计未下载视频
+    const metaWatchedOnly = { bvid: 'BV1swWatch', cid: '9003', p: 1, totalParts: 1, title: 'Watched Only', owner: 'Singer C' };
+    await sw.handleTrackDetected({
+      meta: metaWatchedOnly,
+      sessionId: 's_watch',
+      matched: true,
+      source: '__playinfo__',
+      audios: [{ id: 30280, codecs: 'mp4a.40.2', baseUrl: 'https://cdn/w' }],
+    }, sender);
+
+    // 模拟 metaA (Auto Song) 的磁盘文件已被用户手动删除 (exists: false)
+    const recA = downloadRecords.get(savedA.downloadId);
+    recA.exists = false;
+
+    const exportCallsBefore = nextDlId;
+    const exportRes = await sw.handleExportDownloadHistory(
+      { format: 'md', saveFile: true },
+      null,
+      {
+        fetchPlayerLibrary: async () => ({
+          ok: true,
+          tracks: [
+            {
+              trackKey: 'local_only_from_player',
+              title: '播放器本地歌',
+              owner: '歌手P',
+              fileExists: true,
+              filePath: 'D:\\BiliMusic\\歌手P - 播放器本地歌.m4a',
+              fileSize: 4_194_304,
+              downloadedAt: 1_794_559_000_000,
+            },
+            {
+              trackKey: 'ghost_player',
+              title: '播放器失效记录',
+              fileExists: false,
+              gdriveExists: false,
+            },
+          ],
+        }),
+      }
+    );
+
+    assert.equal(exportRes.ok, true);
+    assert.equal(exportRes.empty, false);
+    assert.equal(exportRes.count, 2, 'Should include surviving Manual Song and Player local song only');
+    assert.ok(exportRes.content.includes('Manual Song'));
+    assert.ok(exportRes.content.includes('播放器本地歌'));
+    assert.ok(!exportRes.content.includes('Auto Song'), 'Deleted file must be excluded from export');
+    assert.ok(!exportRes.content.includes('Watched Only'), 'Un-downloaded track must be excluded from export');
+    assert.ok(!exportRes.content.includes('播放器失效记录'), 'Ghost player track must be excluded from export');
+    assert.equal(nextDlId, exportCallsBefore + 1, 'saveFile=true must trigger chrome.downloads.download');
+    const exportedDlRec = downloadRecords.get(exportRes.downloadId);
+    assert.ok(exportedDlRec);
+    assert.match(exportedDlRec.filename, /BiliMusic-下载历史-\d{4}-\d{2}-\d{2}\.md$/);
+  } finally {
+    await new Promise((r) => setTimeout(r, 20));
+    globalThis.fetch = prevFetch;
+  }
 });

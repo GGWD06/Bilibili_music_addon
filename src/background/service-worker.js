@@ -17,12 +17,18 @@ import { createMessageRouter, notifyPopup } from '../common/messaging.js';
 import {
   makeTrackKey,
   getTrack,
+  getAllTracks,
   upsertTrackMeta,
   clearTrackDownload,
   recordPlayProgress,
   getLeaderboard,
   clearListeningStats,
 } from '../common/db.js';
+import {
+  mergeExportTracks,
+  buildDownloadHistoryExport,
+  buildDownloadDataUrl,
+} from '../common/history-export.js';
 import { evaluateDownloadCandidate } from './preflight.js';
 import { createDownloader } from './downloader.js';
 import { createPlayerSyncClient } from './player-sync.js';
@@ -542,6 +548,95 @@ export async function handleDownloadChanged(delta) {
   }
 }
 
+/** 导出当前电脑实际存在的已下载音乐清单（自动排除已删除文件与未下载视频） */
+export async function handleExportDownloadHistory(payload = {}, _sender = null, deps = {}) {
+  const settings = await getSettings();
+  const getAllTracksFn = deps.getAllTracks || getAllTracks;
+  const downloadsApi = deps.downloadsApi || globalThis.chrome?.downloads;
+  const fetchPlayerLibraryFn = deps.fetchPlayerLibrary || ((cfg) => playerSync.fetchLibrary(cfg));
+
+  const allDbTracks = await getAllTracksFn();
+  const downloadedCandidates = allDbTracks.filter((t) => t && t.downloadId != null);
+
+  const aliveExtTracks = [];
+  if (downloadsApi?.search) {
+    const checks = await Promise.all(
+      downloadedCandidates.map(async (track) => {
+        try {
+          const items = await downloadsApi.search({ id: track.downloadId });
+          const item = Array.isArray(items) ? items[0] : null;
+          if (!item || item.state !== 'complete' || item.exists === false) {
+            return null;
+          }
+          return {
+            ...track,
+            fileExists: true,
+            filePath: item.filename || track.filename,
+            fileSize: Number(item.fileSize) > 0 ? Number(item.fileSize) : (track.fileSize || null),
+            downloadedAt: track.downloadedAt || (item.startTime ? Date.parse(item.startTime) || null : null),
+          };
+        } catch (_) {
+          return null;
+        }
+      })
+    );
+    for (const item of checks) {
+      if (item) aliveExtTracks.push(item);
+    }
+  } else {
+    for (const track of downloadedCandidates) {
+      if (track.filename) {
+        aliveExtTracks.push({ ...track, fileExists: true, filePath: track.filename });
+      }
+    }
+  }
+
+  let playerTracks = [];
+  let mergedWithPlayer = false;
+  if (payload?.includePlayer !== false && settings.enablePlayerSync !== false) {
+    try {
+      const playerRes = await fetchPlayerLibraryFn(settings);
+      if (playerRes?.ok && Array.isArray(playerRes.tracks)) {
+        playerTracks = playerRes.tracks;
+        mergedWithPlayer = true;
+      }
+    } catch (_) {}
+  }
+
+  const mergedTracks = mergeExportTracks(aliveExtTracks, playerTracks);
+  const sourceLabel = mergedWithPlayer
+    ? 'Chrome 扩展 + 桌面播放器 (已验证现存本地与云端曲目)'
+    : 'Chrome 扩展 (已验证本地存活文件)';
+
+  const exported = buildDownloadHistoryExport(mergedTracks, {
+    format: payload?.format || 'md',
+    sourceLabel,
+  });
+
+  let downloadId = null;
+  if (payload?.saveFile && exported.count > 0 && downloadsApi?.download) {
+    const dataUrl = buildDownloadDataUrl(exported.content);
+    downloadId = await downloadsApi.download({
+      url: dataUrl,
+      filename: exported.filename,
+      conflictAction: 'uniquify',
+      saveAs: false,
+    });
+  }
+
+  return {
+    ok: true,
+    empty: exported.count === 0,
+    mergedWithPlayer,
+    downloadId,
+    format: exported.format,
+    filename: exported.filename,
+    mimeType: exported.mimeType,
+    count: exported.count,
+    content: exported.content,
+  };
+}
+
 // ---- 路由注册 ----
 export const messageRouter = createMessageRouter(MSG_TARGET.BACKGROUND, {
   [ACTION.TRACK_DETECTED]: handleTrackDetected,
@@ -556,6 +651,7 @@ export const messageRouter = createMessageRouter(MSG_TARGET.BACKGROUND, {
   [ACTION.CLEAR_STATS]: handleClearStats,
   [ACTION.GET_PLAYER_SYNC_STATUS]: handleGetPlayerSyncStatus,
   [ACTION.SYNC_PLAYER_NOW]: handleSyncPlayerNow,
+  [ACTION.EXPORT_DOWNLOAD_HISTORY]: handleExportDownloadHistory,
 });
 
 if (typeof chrome !== 'undefined' && chrome.runtime) {

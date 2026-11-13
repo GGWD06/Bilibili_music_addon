@@ -37,7 +37,8 @@
 - **动作枚举 (`ACTION`)**：
   - Content ➔ SW：`TRACK_DETECTED`, `PLAY_HEARTBEAT`, `DASH_BLOB_READY`, `DASH_BLOB_FAILED`
   - SW ➔ Content：`FETCH_DASH_BLOB`, `REVOKE_BLOB_URL`
-  - Popup ⇄ SW：`GET_POPUP_STATE`, `POPUP_STATE_UPDATED`, `SET_WORK_MODE`, `UPDATE_SETTINGS`, `MANUAL_DOWNLOAD`, `GET_LEADERBOARD`, `CLEAR_STATS`, `SYNC_PLAYER_NOW`, `GET_PLAYER_SYNC_STATUS`
+  - Popup ⇄ SW：`GET_POPUP_STATE`, `POPUP_STATE_UPDATED`, `SET_WORK_MODE`, `UPDATE_SETTINGS`, `MANUAL_DOWNLOAD`, `GET_LEADERBOARD`, `CLEAR_STATS`, `SYNC_PLAYER_NOW`, `GET_PLAYER_SYNC_STATUS`, `EXPORT_DOWNLOAD_HISTORY`
+  - **已下载音乐清单导出契约 (`src/common/history-export.js`)**：支持 `md`（含 AI 查重提示词与 Markdown 表格）、`json`、`csv`（UTF-8 BOM）三种导出格式；严格仅导出当前仍存在于本地磁盘（`chrome.downloads` 在库未删 / 播放器 `fileExists !== false`）或 Google Drive 云端（`gdriveExists === true`）的已下载曲目，自动剔除已删除历史与未下载记录。
 - **路由器与发送封装**：`isEnvelopeFor`, `createMessageRouter`, `sendToBackground`, `notifyPopup`, `sendToTab`。
 
 ---
@@ -62,3 +63,18 @@
   1. `sanitizeSegment`：Unicode `NFC` 归一化 ➔ 剔除控制字符/零宽字符/Windows 非法字符 ➔ 剥离首尾点号空格并消除内部 `..` ➔ 按码点安全截断（防拆分 Emoji 代理对） ➔ 防御 `CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9` 保留字。
   2. `sanitizeArchiveDir`：剥离斜杠与 `.` / `..` 路径穿越段，生成安全子目录。
   3. `buildArchiveFilename` / `buildFallbackFilename`：单 P 输出 `BiliMusic/{UP主} - {标题}.m4a`，多 P 默认输出 `BiliMusic/{UP主} - {标题}/P{序号} - {分P名}.m4a`（总相对路径长度受控于 180 字符内），保底输出 `BiliMusic/{bvid}_{cid}_{qualityId}.m4a`。
+
+---
+
+## 6. ☁️ 桌面播放器与 Google Drive 云端曲库持久化 (`player/data/`)
+
+所有运行时文件均位于受 `.gitignore` 忽略的 `player/data/` 目录下：
+
+- **`player/data/library.json`** (`player/lib/store.mjs`)：
+  - `tracks` 增量支持云端混合字段：`gdriveFileId`, `gdriveRelativePath`, `gdriveSize`, `gdriveModifiedTime`, `gdriveExists`, `playable`（满足 `(fileExists && filePath) || (gdriveExists && gdriveFileId)` 即视为可播）；
+  - 纯云端未关联 B 站元数据曲目以 `gdrive_<sha1>` 键入库，后续若发现本地文件或通过 Chrome 插件同步会平滑匹配/迁移并保留红心收藏与歌单归属；
+  - `summary` 汇总包含 `localTracks`、`localOnlyTracks`、`cloudTracks`、`cloudOnlyTracks`、`bothTracks`（双端均存在曲目数）。
+- **`player/data/gdrive-auth.json`** (`player/lib/gdrive.mjs`)：
+  - 存储用户各自的 OAuth `clientId`、`clientSecret`（可选）、`folderInput` / `folderId`、`cacheEnabled`、`accessToken`、`refreshToken`、`expiresAt`、`userEmail`、`displayName`、`lastSyncAt`；`/api/gdrive/status` 仅返回脱敏状态布尔值与邮箱，严禁回传令牌或密钥。
+- **`player/data/gdrive-cache/`**：
+  - 按 `{safeGdriveFileId}{ext}` 存储完整云端音频缓存，默认上限 `2 GB`（LRU 按文件修改时间淘汰）。

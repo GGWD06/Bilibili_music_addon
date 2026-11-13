@@ -99,10 +99,22 @@ test('popup.html & popup.js: all element IDs match, no inline handlers/dialogs, 
 
   const docListeners = new Map();
   const sentMessages = [];
+  const copiedTexts = [];
   let clearStatsCalls = 0;
 
   const prevDoc = globalThis.document;
   const prevChrome = globalThis.chrome;
+  const prevNavDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      clipboard: {
+        writeText: async (txt) => { copiedTexts.push(txt); },
+      },
+    },
+    configurable: true,
+    writable: true,
+  });
 
   globalThis.document = {
     activeElement: null,
@@ -176,6 +188,17 @@ test('popup.html & popup.js: all element IDs match, no inline handlers/dialogs, 
           clearStatsCalls += 1;
           return { ok: true };
         }
+        if (env.action === 'EXPORT_DOWNLOAD_HISTORY') {
+          return {
+            ok: true,
+            empty: false,
+            count: 2,
+            format: env.payload?.format || 'md',
+            filename: 'BiliMusic-下载历史-2026-11-13.md',
+            content: '# BiliMusic 已下载音乐清单\n| 1 | 测试歌 |',
+            downloadId: env.payload?.saveFile ? 99 : null,
+          };
+        }
         return { ok: true };
       },
     },
@@ -217,8 +240,24 @@ test('popup.html & popup.js: all element IDs match, no inline handlers/dialogs, 
     await clearBtn.dispatchEvent('click');
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(clearStatsCalls, 1, 'Second click must dispatch CLEAR_STATS');
+
+    // 测试导出已下载音乐清单（复制给 AI & 导出文件）
+    elMap.get('export-format').value = 'md';
+    await elMap.get('btn-copy-history').dispatchEvent('click');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(copiedTexts.length, 1);
+    assert.ok(copiedTexts[0].includes('BiliMusic 已下载音乐清单'));
+
+    await elMap.get('btn-export-history').dispatchEvent('click');
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(
+      sentMessages.some((m) => m.action === 'EXPORT_DOWNLOAD_HISTORY' && m.payload.saveFile === true && m.payload.format === 'md')
+    );
   } finally {
     globalThis.document = prevDoc;
     globalThis.chrome = prevChrome;
+    if (prevNavDesc) {
+      Object.defineProperty(globalThis, 'navigator', prevNavDesc);
+    }
   }
 });

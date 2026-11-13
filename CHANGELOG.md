@@ -4,6 +4,55 @@
 
 ---
 
+### [2026-11-13] - 全面更新 `README.md` 对齐最新全量功能与使用指南
+- **所属模块**：项目说明文档 (`README.md`, `CHANGELOG.md`)
+- **核心变更**：
+  1. 全面扩充 `README.md` 的「核心特性」，补齐 Chrome 扩展（DASH 音质代号、`cacheByCid` 防串曲、三态工作模式、音质升级与多 P 归档）、独立桌面播放器（Windows 重定向目录探测、`fs.watch`、4 种播放模式、来源筛选、双向同步）、Google Drive 私人云端曲库（OAuth 2.0 PKCE、2GB LRU 缓存、4 MiB 分片上传）与双端已下载清单导出（AI 查重 `.md`/`.json`/`.csv`）的完整说明。
+  2. 更新「项目结构」表，纳入 `assets/icons/`、`src/common/history-export.js`、`src/background/player-sync.js`、`player/lib/{media-stream,gdrive}.mjs` 等现存全量模块。
+  3. 完善「快速开始」步骤，补充环境要求（Chrome ≥ 116 / Node.js 18+）、`player/start.mjs` CLI 参数（`--no-open` / `--port`）、Google Drive 配置流程（说明 `player/data/` 已列入 `.gitignore`）以及 AI 查重清单导出入口与记忆库文档导航。
+- **原因与机理**：原 `README.md` 停留在初始播放器版本，缺少双端清单导出、来源筛选与 Google Drive 完整引导等近期新增特性，更新后与仓库现行功能完全同步。
+
+### [2026-11-13] - 清理桌面播放器测试假数据并隔离 SW 单元测试网络请求
+- **所属模块**：播放器运行数据与自动化测试 (`player/data/library.json`, `tests/phase2.test.mjs`, `tests/phase3.test.mjs`, `memory/05_pitfalls.md`)
+- **核心变更**：
+  1. 从本地运行库 `player/data/library.json` 移除此前测试污染写入的 3 条虚假曲目（`BV1swP3A_9001`、`BV1swP3B_9002`、`BV1swTest_777`），完整保留全部 9 首真实本地/云端曲目与播放日志。
+  2. 在 `tests/phase2.test.mjs` 与 `tests/phase3.test.mjs` 的 `service-worker.js` 集成测试中拦截 `globalThis.fetch`（并在 `finally` 排空微任务后再恢复，同时在 `phase2.test.mjs` 关闭 `enablePlayerSync`），防止测试执行时向 `http://127.0.0.1:19527` 真实播放器服务推送假曲目。
+  3. 在 `memory/05_pitfalls.md` 新增 `#14` 避坑法则记录测试未隔离 `fetch` 污染实盘曲库的机理。
+- **原因与机理**：`DEFAULT_SETTINGS.enablePlayerSync` 默认开启，导致导入 `service-worker.js` 的单元测试在播放器服务在线时触发真实的 `POST /api/sync/event` 请求并写入 `library.json`。
+
+### [2026-11-13] - 新增 Chrome 扩展与桌面播放器双端「导出已下载音乐清单（AI 查重专用）」
+- **核心定位与过滤红线**：支持从 Chrome 扩展与桌面播放器双端导出已下载曲目清单，方便直接粘贴或投喂给 AI 进行重复歌曲排查；**严格仅保留当前仍存在于本地磁盘或 Google Drive 云端的文件**，自动过滤已删除文件（`fileExists === false && !gdriveExists` / 已不在 `chrome.downloads` 存活文件）及未下载的纯播放统计视频，避免产生找不到已删文件的困惑。
+- **共享导出引擎 (`src/common/history-export.js`)**：
+  - 新增 `filterExistingDownloadedTracks`、`mergeExportTracks`（按 `bvid_cid`、`gdriveFileId`、规范化完整路径/相对路径智能去重融合，规避多 P 同名 `P01 - Intro.m4a` 跨专辑误合并）、`buildDownloadHistoryExport`（生成 `md` / `json` / `csv` 三种格式，Markdown 自带 AI 查重提示词头部，CSV 含 UTF-8 BOM）与 `buildDownloadDataUrl`（`data:application/octet-stream;base64,...` 保留原始扩展名）。
+- **Chrome 扩展端导出 (`src/common/constants.js` + `src/background/player-sync.js` + `src/background/service-worker.js` + `src/popup/*`)**：
+  - 新增 `ACTION.EXPORT_DOWNLOAD_HISTORY` 动作、`playerSync.fetchLibrary(settings)`（在线时合并桌面播放器真实在库文件）与 `handleExportDownloadHistory` 处理器（核验 `chrome.downloads` 文件是否仍存在，支持仅生成文本复制或触发下载落盘）。
+  - 在 Popup 控台新增 `.export-card`（`#export-format`、`#btn-copy-history`、`#btn-export-history`），保持 `360x520` 无横向滚动与非阻塞 Toast 提示。
+- **桌面播放器端导出 (`player/server.mjs` + `player/public/*`)**：
+  - 新增 `GET /api/export/history` 接口（导出前主动触发 `rescanLibrary()` 校验磁盘真实在库状态，支持 `?format=md|json|csv` 与 `?download=1` 附件下载）。
+  - 在播放器顶栏新增「导出清单」按钮（`#btn-toggle-export`）及弹出菜单（`#export-popover`，含 `#export-format-select`、`#btn-export-copy`、`#btn-export-download`）。
+- **测试覆盖 (`tests/common.test.mjs`, `tests/phase3.test.mjs`, `tests/phase4.test.mjs`, `tests/player.test.mjs`)**：补全导出格式、已删/未下载过滤、防跨专辑误合并、Popup/Player UI 与 HTTP 接口测试。
+
+---
+
+### [2026-11-13] - 桌面播放器新增存储来源筛选栏与「本地 + 云端」状态徽章
+- **所属模块**：桌面播放器存储汇总与界面 (`player/lib/store.mjs`, `player/public/{index.html,player.css,player.js}`, `tests/player.test.mjs`, `memory/02_data_models.md`)
+- **核心变更**：
+  1. 在 `player/lib/store.mjs` 的 `buildSummary()` 中新增 `bothTracks`（同时存在于本地磁盘与 Google Drive）与 `localOnlyTracks`（仅本地未备份）汇总计数。
+  2. 在 `player/public/index.html` 与 `player.css` 曲目列表视图顶部增加存储来源筛选栏 `#track-source-pills`（支持「全部 / 本地 + 云端 / 仅本地 / 仅云端 / 未下载」一键筛选并实时显示各分类数量），并在曲目表新增独立「来源」列及分级彩色胶囊徽章（`.pill-both` / `.pill-local` / `.pill-cloud` / `.pill-muted`）。
+  3. 在 `player/public/player.js` 实现 `getTrackSourceStatus`、`getSourceBadge`、`countTrackSources` 与 `getBaseTracksForView`，支持在任意曲库/收藏/自定义歌单视图下叠加来源筛选与搜索，并在听歌排行榜卡片同步展示来源徽章与更精准的筛选空状态提示。
+  4. 在 `tests/player.test.mjs` 扩充 `bothTracks` / `localOnlyTracks` 统计断言及 `vm` 沙箱 DOM 来源筛选测试，全套 `node --test` 19/19 通过。
+- **原因与机理**：原有仅在副标题展示灰色小字的方式不易快速定位哪些曲目已完成本地与 Google Drive 双端备份（或仅单端存在），新增来源列与筛选栏后可直接检索并配合列表顺序/随机播放使用。
+
+### [2026-11-13] - 桌面播放器原生接入 Google Drive 私人云端曲库与上传备份
+- **所属模块**：桌面播放器云端引擎、持久化存储与界面 (`player/lib/gdrive.mjs`, `player/lib/media-stream.mjs`, `player/lib/store.mjs`, `player/server.mjs`, `player/public/{index.html,player.css,player.js}`, `tests/player.test.mjs`, `memory/*`, `README.md`)
+- **核心变更**：
+  1. 抽取 `player/lib/media-stream.mjs` 统一封装音频 MIME 映射与本地磁盘 `206 Range` 流式输出，消除重复代码。
+  2. 新增零依赖 `player/lib/gdrive.mjs`：实现 Google OAuth 2.0 PKCE 本地回环授权（每用户凭据与 Token 独立存于受 `.gitignore` 保护的 `player/data/gdrive-auth.json`）、`401` 自动并发去重 Refresh Token、父目录批查询扫库（25 目录/批，复用 `parseArchiveFilenameMeta` 解析）、`206 Range` 透传流式代理（从字节 0 起播时零额外带宽边听边存至 `player/data/gdrive-cache/`，2GB LRU 自动淘汰）以及 4 MiB 分片 `Resumable Upload` 上传（保留多 P 子目录结构并跳过等长已有文件）。
+  3. 升级 `player/lib/store.mjs` 与 `player/server.mjs`：支持本地与云端曲目混合融合（本地优先、仅云端亦可播且统计与歌单无缝共享），新增 `/api/gdrive/{status,config,auth/start,oauth/callback,auth/disconnect,sync,upload,cache/clear}` 路由，并以 `res.on('close')` 替代 `req.on('close')` 防止 Node 24 下提前中止流与缓存竞态。
+  4. 升级桌面播放器前端 (`player/public/`)：侧边栏增加云端状态与快捷「☁ 同步」「☁↑ 上传」入口，每行本地曲目新增 `☁↑` 单曲上传按钮，设置抽屉增加 Google Drive 凭据/文件夹 ID/缓存开关/清理缓存及操作指引。
+  5. 在 `tests/player.test.mjs` 新增完整 Google Drive OAuth PKCE、批扫描、Range 缓存命中、分片 `308` 上传与断开连接集成测试，全套 `node --test` 18/18 全部通过。
+- **原因与机理**：满足自用及小范围用户各自读取与备份自己 Google Drive 曲库的需求，无需安装或依赖本地网盘挂载客户端，且在无外部依赖的前提下兼顾毫秒级扫库与流畅 Range 播放体验。
+
 ### [2026-11-13] - 补齐开源仓库基础配置（`.gitignore` / `README.md`）并关联 GitHub 远程仓库
 - **所属模块**：工程配置与文档 (`README.md`, `.gitignore`, `CHANGELOG.md`)
 - **核心变更**：

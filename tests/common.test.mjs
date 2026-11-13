@@ -33,6 +33,12 @@ import {
   getLeaderboard,
   clearListeningStats,
 } from '../src/common/db.js';
+import {
+  filterExistingDownloadedTracks,
+  mergeExportTracks,
+  buildDownloadHistoryExport,
+  buildDownloadDataUrl,
+} from '../src/common/history-export.js';
 
 /**
  * 极简内存版 IDBFactory（仅覆盖 db.js 所需 Store / Index / KeyRange / Transaction 子集），
@@ -380,4 +386,128 @@ test('db: track upsert, session play_logs coalescing, download upgrade & leaderb
     sortLeaderboardItems([{ id: 1, playCount: 2 }, { id: 2, playCount: 5 }], 'playCount').map((x) => x.id),
     [2, 1]
   );
+});
+
+// ============================================================================
+// 5. history-export.js：仅导出当前存活本地/云端曲目、去重合并与 AI 格式生成
+// ============================================================================
+test('history-export: filters missing/undownloaded tracks, merges safely and formats md/json/csv', () => {
+  const extAlive = [
+    {
+      trackKey: 'BV1x_1',
+      bvid: 'BV1x',
+      cid: '1',
+      title: '晴天 | Live版',
+      owner: '歌手A',
+      qualityId: 30251,
+      codecs: 'flac',
+      fileExists: true,
+      filePath: 'D:\\BiliMusic\\歌手A - 晴天 Live版.m4a',
+      fileSize: 12_582_912,
+      downloadedAt: 1_794_550_000_000,
+    },
+    {
+      trackKey: 'BV1deleted_2',
+      bvid: 'BV1deleted',
+      cid: '2',
+      title: '已被删除的歌',
+      owner: '歌手B',
+      fileExists: false,
+      gdriveExists: false,
+      downloadedAt: 1_794_540_000_000,
+    },
+    {
+      trackKey: 'BV1watched_3',
+      bvid: 'BV1watched',
+      cid: '3',
+      title: '只看过没下载',
+      owner: 'UP',
+      fileExists: false,
+      gdriveExists: false,
+    },
+  ];
+
+  const playerTracks = [
+    // 与 extAlive 中 BV1x_1 同路径 -> 应融合为 1 条，补充云端标记
+    {
+      trackKey: 'BV1x_1',
+      bvid: 'BV1x',
+      cid: '1',
+      title: '晴天 | Live版',
+      owner: '歌手A',
+      fileExists: true,
+      filePath: 'D:\\BiliMusic\\歌手A - 晴天 Live版.m4a',
+      gdriveExists: true,
+      gdriveFileId: 'drv_sunny',
+      gdriveRelativePath: '歌手A - 晴天 Live版.m4a',
+      totalPlayCount: 5,
+    },
+    // 两张不同专辑同名 P01 - Intro.m4a 不应误合并
+    {
+      trackKey: 'local_p1',
+      title: '专辑甲',
+      part: 'Intro',
+      p: 1,
+      totalParts: 2,
+      owner: 'UP甲',
+      fileExists: true,
+      filePath: 'D:\\BiliMusic\\UP甲 - 专辑甲\\P01 - Intro.m4a',
+      relativePath: 'UP甲 - 专辑甲/P01 - Intro.m4a',
+      fileSize: 3_145_728,
+      downloadedAt: 1_794_560_000_000,
+    },
+    {
+      trackKey: 'local_p2',
+      title: '专辑乙',
+      part: 'Intro',
+      p: 1,
+      totalParts: 2,
+      owner: 'UP乙',
+      fileExists: true,
+      filePath: 'D:\\BiliMusic\\UP乙 - 专辑乙\\P01 - Intro.m4a',
+      relativePath: 'UP乙 - 专辑乙/P01 - Intro.m4a',
+      fileSize: 2_097_152,
+      downloadedAt: 1_794_555_000_000,
+    },
+    {
+      trackKey: 'cloud_only_1',
+      title: '云端独享',
+      owner: 'UP云',
+      fileExists: false,
+      gdriveExists: true,
+      gdriveFileId: 'drv_only_1',
+      gdriveRelativePath: 'UP云 - 云端独享.m4a',
+      gdriveSize: 5_242_880,
+      downloadedAt: 1_794_552_000_000,
+    },
+  ];
+
+  assert.equal(filterExistingDownloadedTracks(extAlive).length, 1);
+  const merged = mergeExportTracks(extAlive, playerTracks);
+  assert.equal(merged.length, 4, 'Must merge duplicate BV1x_1 while keeping two distinct P01 Intros and cloud-only track');
+
+  const md = buildDownloadHistoryExport(merged, {
+    format: 'md',
+    sourceLabel: '测试来源',
+    exportedAt: 1_794_560_100_000,
+  });
+  assert.equal(md.count, 4);
+  assert.match(md.filename, /^BiliMusic-下载历史-\d{4}-\d{2}-\d{2}\.md$/);
+  assert.ok(!md.content.includes('已被删除的歌'), 'Deleted track must not appear in export');
+  assert.ok(!md.content.includes('只看过没下载'), 'Un-downloaded track must not appear in export');
+  assert.ok(md.content.includes('晴天 \\| Live版'), 'Pipe char in title must be escaped in Markdown table');
+  assert.ok(md.content.includes('本地+云端'));
+  assert.ok(md.content.includes('仅云端'));
+
+  const jsonExp = buildDownloadHistoryExport(merged, { format: 'json', exportedAt: 1_794_560_100_000 });
+  const parsedJson = JSON.parse(jsonExp.content);
+  assert.equal(parsedJson.totalCount, 4);
+  assert.equal(parsedJson.tracks[0].title, '专辑甲 [P1: Intro]');
+
+  const csvExp = buildDownloadHistoryExport(merged, { format: 'csv', exportedAt: 1_794_560_100_000 });
+  assert.ok(csvExp.content.startsWith('\uFEFF'), 'CSV must start with UTF-8 BOM for Windows Excel');
+  assert.ok(csvExp.content.includes('专辑乙 [P1: Intro]'));
+
+  const dataUrl = buildDownloadDataUrl('测试中文导出');
+  assert.ok(dataUrl.startsWith('data:application/octet-stream;base64,'));
 });

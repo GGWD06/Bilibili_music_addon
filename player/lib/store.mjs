@@ -21,11 +21,23 @@ function makeLocalKey(relativePath) {
   return 'local_' + crypto.createHash('sha1').update(norm).digest('hex').slice(0, 16);
 }
 
+function makeDriveKey(gdriveFileId) {
+  return 'gdrive_' + crypto.createHash('sha1').update(String(gdriveFileId)).digest('hex').slice(0, 16);
+}
+
+function isTrackPlayable(t) {
+  return Boolean((t?.fileExists && t?.filePath) || (t?.gdriveExists && t?.gdriveFileId));
+}
+
 function sanitizeTrack(raw) {
   const biliPlayCount = Math.max(0, Number(raw.biliPlayCount ?? 0) || 0);
   const biliPlayedSeconds = Math.max(0, Number(raw.biliPlayedSeconds ?? 0) || 0);
   const playerPlayCount = Math.max(0, Number(raw.playerPlayCount ?? 0) || 0);
   const playerPlayedSeconds = Math.max(0, Number(raw.playerPlayedSeconds ?? 0) || 0);
+  const fileExists = Boolean(raw.fileExists);
+  const gdriveFileId = raw.gdriveFileId ? String(raw.gdriveFileId) : null;
+  const gdriveExists = Boolean(raw.gdriveExists && gdriveFileId);
+  const playable = Boolean((fileExists && raw.filePath) || gdriveExists);
 
   return {
     ...raw,
@@ -36,7 +48,13 @@ function sanitizeTrack(raw) {
     totalPlayCount: biliPlayCount + playerPlayCount,
     totalPlayedSeconds: Number((biliPlayedSeconds + playerPlayedSeconds).toFixed(2)),
     favorite: Boolean(raw.favorite),
-    fileExists: Boolean(raw.fileExists),
+    fileExists,
+    gdriveFileId,
+    gdriveRelativePath: raw.gdriveRelativePath ? String(raw.gdriveRelativePath) : null,
+    gdriveSize: raw.gdriveSize !== undefined && raw.gdriveSize !== null ? Number(raw.gdriveSize) || 0 : null,
+    gdriveModifiedTime: raw.gdriveModifiedTime ? Number(raw.gdriveModifiedTime) || null : null,
+    gdriveExists,
+    playable,
   };
 }
 
@@ -150,13 +168,13 @@ export function createPlayerStore(options = {}) {
     const extBase = path.posix.basename(extNorm);
 
     for (const [existingKey, t] of Object.entries(state.tracks)) {
-      if (!existingKey.startsWith('local_')) continue;
+      if (!existingKey.startsWith('local_') && !existingKey.startsWith('gdrive_')) continue;
       const fpNorm = normalizePathCompare(t.filePath || '');
-      const relNorm = normalizePathCompare(t.relativePath || '');
+      const relNorm = normalizePathCompare(t.relativePath || t.gdriveRelativePath || '');
       if (
         (fpNorm && (fpNorm === extNorm || fpNorm.endsWith('/' + extNorm) || extNorm.endsWith('/' + relNorm))) ||
         (relNorm && extNorm.endsWith('/' + relNorm)) ||
-        (extBase && path.posix.basename(fpNorm) === extBase)
+        (extBase && (path.posix.basename(fpNorm) === extBase || path.posix.basename(relNorm) === extBase))
       ) {
         return existingKey;
       }
@@ -247,6 +265,11 @@ export function createPlayerStore(options = {}) {
   function buildSummary() {
     const list = Object.values(state.tracks);
     let playableTracks = 0;
+    let localTracks = 0;
+    let localOnlyTracks = 0;
+    let cloudTracks = 0;
+    let cloudOnlyTracks = 0;
+    let bothTracks = 0;
     let favoriteTracks = 0;
     let totalPlayCount = 0;
     let totalPlayedSeconds = 0;
@@ -256,7 +279,14 @@ export function createPlayerStore(options = {}) {
     let playerPlayedSeconds = 0;
 
     for (const t of list) {
-      if (t.fileExists && t.filePath) playableTracks += 1;
+      const hasLocal = Boolean(t.fileExists && t.filePath);
+      const hasCloud = Boolean(t.gdriveExists && t.gdriveFileId);
+      if (hasLocal || hasCloud) playableTracks += 1;
+      if (hasLocal) localTracks += 1;
+      if (hasCloud) cloudTracks += 1;
+      if (hasLocal && hasCloud) bothTracks += 1;
+      else if (hasLocal) localOnlyTracks += 1;
+      else if (hasCloud) cloudOnlyTracks += 1;
       if (t.favorite) favoriteTracks += 1;
       biliPlayCount += t.biliPlayCount || 0;
       biliPlayedSeconds += t.biliPlayedSeconds || 0;
@@ -269,6 +299,11 @@ export function createPlayerStore(options = {}) {
     return {
       totalTracks: list.length,
       playableTracks,
+      localTracks,
+      localOnlyTracks,
+      cloudTracks,
+      cloudOnlyTracks,
+      bothTracks,
       favoriteTracks,
       totalPlaylists: state.playlists.length,
       totalPlayCount,
@@ -336,66 +371,116 @@ export function createPlayerStore(options = {}) {
     });
   }
 
+  function buildTrackIndexes() {
+    const byDriveId = new Map();
+    const byFilePath = new Map();
+    const byRelative = new Map();
+    const byBasename = new Map();
+
+    for (const [k, t] of Object.entries(state.tracks)) {
+      if (t.gdriveFileId) byDriveId.set(String(t.gdriveFileId), k);
+      if (t.filePath) byFilePath.set(normalizePathCompare(t.filePath), k);
+      if (t.relativePath) {
+        const relNorm = normalizePathCompare(t.relativePath);
+        byRelative.set(relNorm, k);
+        byBasename.set(path.posix.basename(relNorm), k);
+      }
+      if (t.gdriveRelativePath) {
+        const gRelNorm = normalizePathCompare(t.gdriveRelativePath);
+        if (!byRelative.has(gRelNorm)) byRelative.set(gRelNorm, k);
+        const gBase = path.posix.basename(gRelNorm);
+        if (!byBasename.has(gBase)) byBasename.set(gBase, k);
+      }
+      if (t.filename) {
+        const fnNorm = normalizePathCompare(t.filename);
+        byRelative.set(fnNorm, k);
+        byBasename.set(path.posix.basename(fnNorm), k);
+      }
+    }
+
+    return { byDriveId, byFilePath, byRelative, byBasename };
+  }
+
+  function resolveMatchedTrackKey(file, indexes, presenceKey) {
+    const relNorm = normalizePathCompare(file.relativePath);
+    const baseNorm = normalizePathCompare(file.basename);
+
+    if (file.gdriveFileId && indexes.byDriveId.has(String(file.gdriveFileId))) {
+      return indexes.byDriveId.get(String(file.gdriveFileId));
+    }
+    if (file.filePath) {
+      const fpNorm = normalizePathCompare(file.filePath);
+      if (indexes.byFilePath.has(fpNorm)) return indexes.byFilePath.get(fpNorm);
+    }
+    if (relNorm && indexes.byRelative.has(relNorm)) {
+      return indexes.byRelative.get(relNorm);
+    }
+    if (file.parsedMeta?.bvid && file.parsedMeta?.cid) {
+      const candidate = `${file.parsedMeta.bvid}_${file.parsedMeta.cid}`;
+      if (state.tracks[candidate]) return candidate;
+    }
+    if (relNorm) {
+      for (const [k, t] of Object.entries(state.tracks)) {
+        if (t.filename && normalizePathCompare(t.filename).endsWith('/' + relNorm)) {
+          return k;
+        }
+      }
+    }
+    if (baseNorm && indexes.byBasename.has(baseNorm)) {
+      const candidateKey = indexes.byBasename.get(baseNorm);
+      const candidate = state.tracks[candidateKey];
+      if (candidate && !candidate[presenceKey]) {
+        return candidateKey;
+      }
+    }
+    return null;
+  }
+
+  function buildNewScannedTrack(newKey, file, overrides = {}, now = Date.now()) {
+    const meta = file.parsedMeta || {};
+    const existingSameKey = state.tracks[newKey];
+    return sanitizeTrack({
+      ...(existingSameKey || {}),
+      trackKey: newKey,
+      bvid: meta.bvid || existingSameKey?.bvid || null,
+      cid: meta.cid || existingSameKey?.cid || null,
+      p: meta.p || existingSameKey?.p || 1,
+      totalParts: existingSameKey?.totalParts || 1,
+      title: existingSameKey?.title || meta.title || file.basename,
+      part: existingSameKey?.part ?? meta.part ?? null,
+      owner: existingSameKey?.owner || meta.owner || '',
+      cover: existingSameKey?.cover || null,
+      qualityId: existingSameKey?.qualityId ?? meta.qualityId ?? null,
+      codecs: existingSameKey?.codecs ?? null,
+      filename: existingSameKey?.filename || file.relativePath,
+      relativePath: existingSameKey?.relativePath || file.relativePath,
+      firstPlayedAt: existingSameKey?.firstPlayedAt || now,
+      lastPlayedAt: existingSameKey?.lastPlayedAt || Math.round(file.mtimeMs || now),
+      downloadedAt: existingSameKey?.downloadedAt || Math.round(file.mtimeMs || now),
+      ...overrides,
+    });
+  }
+
   /**
-   * 将扫描到的本地音频文件列表同步入库（智能匹配插件已推送曲目与历史本地曲目）。
+   * 将扫描到的本地音频文件列表同步入库（智能匹配插件已推送曲目、云端曲目与历史本地曲目）。
    * @param {Array<object>} scannedFiles
    */
   async function syncScannedFiles(scannedFiles = []) {
     return serialized(async () => {
       await ensureLoaded();
 
-      // 先将所有存量曲目标记为未验证，避免已删除的磁盘文件仍显示可播
+      // 先将所有存量本地曲目标记为未验证，避免已删除的磁盘文件仍显示本地可播
       for (const key of Object.keys(state.tracks)) {
-        state.tracks[key] = { ...state.tracks[key], fileExists: false };
+        state.tracks[key] = sanitizeTrack({ ...state.tracks[key], fileExists: false });
       }
 
-      const entries = Object.entries(state.tracks);
-      const byFilePath = new Map();
-      const byRelative = new Map();
-      const byBasename = new Map();
-
-      for (const [k, t] of entries) {
-        if (t.filePath) byFilePath.set(normalizePathCompare(t.filePath), k);
-        if (t.relativePath) byRelative.set(normalizePathCompare(t.relativePath), k);
-        if (t.filename) {
-          const fnNorm = normalizePathCompare(t.filename);
-          byRelative.set(fnNorm, k);
-          byBasename.set(path.posix.basename(fnNorm), k);
-        }
-      }
-
+      const indexes = buildTrackIndexes();
       let added = 0;
       let matched = 0;
       const now = Date.now();
 
       for (const file of scannedFiles) {
-        const fpNorm = normalizePathCompare(file.filePath);
-        const relNorm = normalizePathCompare(file.relativePath);
-        const baseNorm = normalizePathCompare(file.basename);
-
-        let targetKey = byFilePath.get(fpNorm) || byRelative.get(relNorm) || null;
-
-        if (!targetKey && file.parsedMeta?.bvid && file.parsedMeta?.cid) {
-          const candidate = `${file.parsedMeta.bvid}_${file.parsedMeta.cid}`;
-          if (state.tracks[candidate]) targetKey = candidate;
-        }
-
-        if (!targetKey) {
-          for (const [k, t] of Object.entries(state.tracks)) {
-            if (t.filename && normalizePathCompare(t.filename).endsWith('/' + relNorm)) {
-              targetKey = k;
-              break;
-            }
-          }
-        }
-
-        if (!targetKey && byBasename.has(baseNorm)) {
-          const candidateKey = byBasename.get(baseNorm);
-          const candidate = state.tracks[candidateKey];
-          if (candidate && !candidate.fileExists) {
-            targetKey = candidateKey;
-          }
-        }
+        const targetKey = resolveMatchedTrackKey(file, indexes, 'fileExists');
 
         if (targetKey && state.tracks[targetKey]) {
           const prev = state.tracks[targetKey];
@@ -413,29 +498,17 @@ export function createPlayerStore(options = {}) {
           const meta = file.parsedMeta || {};
           const newKey =
             meta.bvid && meta.cid ? `${meta.bvid}_${meta.cid}` : makeLocalKey(file.relativePath || file.filePath);
-          const existingSameKey = state.tracks[newKey];
-          state.tracks[newKey] = sanitizeTrack({
-            ...(existingSameKey || {}),
-            trackKey: newKey,
-            bvid: meta.bvid || existingSameKey?.bvid || null,
-            cid: meta.cid || existingSameKey?.cid || null,
-            p: meta.p || existingSameKey?.p || 1,
-            totalParts: existingSameKey?.totalParts || 1,
-            title: existingSameKey?.title || meta.title || file.basename,
-            part: existingSameKey?.part ?? meta.part ?? null,
-            owner: existingSameKey?.owner || meta.owner || '',
-            cover: existingSameKey?.cover || null,
-            qualityId: existingSameKey?.qualityId ?? meta.qualityId ?? null,
-            codecs: existingSameKey?.codecs ?? null,
-            filename: existingSameKey?.filename || file.relativePath,
-            filePath: file.filePath,
-            relativePath: file.relativePath,
-            fileSize: file.fileSize,
-            fileExists: true,
-            firstPlayedAt: existingSameKey?.firstPlayedAt || now,
-            lastPlayedAt: existingSameKey?.lastPlayedAt || Math.round(file.mtimeMs || now),
-            downloadedAt: existingSameKey?.downloadedAt || Math.round(file.mtimeMs || now),
-          });
+          state.tracks[newKey] = buildNewScannedTrack(
+            newKey,
+            file,
+            {
+              filePath: file.filePath,
+              relativePath: file.relativePath,
+              fileSize: file.fileSize,
+              fileExists: true,
+            },
+            now
+          );
           added += 1;
         }
       }
@@ -446,6 +519,108 @@ export function createPlayerStore(options = {}) {
         matched,
         summary: buildSummary(),
       };
+    });
+  }
+
+  /**
+   * 将扫描到的 Google Drive 云端音频文件列表同步入库（与本地曲库智能融合）。
+   * @param {Array<object>} driveFiles
+   */
+  async function syncDriveFiles(driveFiles = []) {
+    return serialized(async () => {
+      await ensureLoaded();
+
+      for (const key of Object.keys(state.tracks)) {
+        state.tracks[key] = sanitizeTrack({ ...state.tracks[key], gdriveExists: false });
+      }
+
+      const indexes = buildTrackIndexes();
+      let added = 0;
+      let matched = 0;
+      const now = Date.now();
+
+      for (const file of driveFiles) {
+        const targetKey = resolveMatchedTrackKey(file, indexes, 'gdriveExists');
+
+        if (targetKey && state.tracks[targetKey]) {
+          const prev = state.tracks[targetKey];
+          state.tracks[targetKey] = sanitizeTrack({
+            ...prev,
+            gdriveFileId: file.gdriveFileId,
+            gdriveRelativePath: file.relativePath,
+            gdriveSize: file.fileSize,
+            gdriveModifiedTime: file.gdriveModifiedTime || file.mtimeMs || now,
+            gdriveExists: true,
+            relativePath: prev.relativePath || file.relativePath,
+            qualityId: prev.qualityId ?? file.parsedMeta?.qualityId ?? null,
+          });
+          matched += 1;
+        } else {
+          const meta = file.parsedMeta || {};
+          const newKey =
+            meta.bvid && meta.cid ? `${meta.bvid}_${meta.cid}` : makeDriveKey(file.gdriveFileId);
+          state.tracks[newKey] = buildNewScannedTrack(
+            newKey,
+            file,
+            {
+              gdriveFileId: file.gdriveFileId,
+              gdriveRelativePath: file.relativePath,
+              gdriveSize: file.fileSize,
+              gdriveModifiedTime: file.gdriveModifiedTime || file.mtimeMs || now,
+              gdriveExists: true,
+              fileExists: false,
+            },
+            now
+          );
+          added += 1;
+        }
+      }
+
+      await persist();
+      return {
+        added,
+        matched,
+        summary: buildSummary(),
+      };
+    });
+  }
+
+  async function markTrackUploadedToDrive(trackKey, uploadMeta = {}) {
+    return serialized(async () => {
+      await ensureLoaded();
+      const existing = state.tracks[trackKey];
+      if (!existing) return null;
+      const updated = sanitizeTrack({
+        ...existing,
+        gdriveFileId: uploadMeta.gdriveFileId,
+        gdriveRelativePath: uploadMeta.gdriveRelativePath || existing.gdriveRelativePath || existing.relativePath || null,
+        gdriveSize: uploadMeta.gdriveSize ?? existing.fileSize ?? null,
+        gdriveModifiedTime: uploadMeta.gdriveModifiedTime || Date.now(),
+        gdriveExists: true,
+      });
+      state.tracks[trackKey] = updated;
+      await persist();
+      return { track: updated, summary: buildSummary() };
+    });
+  }
+
+  async function clearDrivePresence() {
+    return serialized(async () => {
+      await ensureLoaded();
+      for (const key of Object.keys(state.tracks)) {
+        if (state.tracks[key].gdriveExists || state.tracks[key].gdriveFileId) {
+          state.tracks[key] = sanitizeTrack({
+            ...state.tracks[key],
+            gdriveExists: false,
+            gdriveFileId: null,
+            gdriveRelativePath: null,
+            gdriveSize: null,
+            gdriveModifiedTime: null,
+          });
+        }
+      }
+      await persist();
+      return { summary: buildSummary() };
     });
   }
 
@@ -671,6 +846,9 @@ export function createPlayerStore(options = {}) {
     getSettings,
     updateSettings,
     syncScannedFiles,
+    syncDriveFiles,
+    markTrackUploadedToDrive,
+    clearDrivePresence,
     mergeExtensionTrack,
     mergeExtensionBatch,
     getTrack,

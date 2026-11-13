@@ -890,3 +890,50 @@ body {
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* ---- Export Download History Card ---- */
+.export-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.export-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.export-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.export-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.export-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.export-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-root);
+}
+
+.btn-export-accent {
+  border-color: rgba(251, 114, 153, 0.45);
+  color: var(--accent-pink);
+}
+
+.btn-export-accent:hover:not(:disabled) {
+  background: var(--accent-pink-soft);
+}

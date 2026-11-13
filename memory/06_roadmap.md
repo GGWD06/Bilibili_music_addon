@@ -12,7 +12,7 @@
      - **顶部模式切换栏**：支持一键切换三态工作模式——「仅听歌统计（绿，默认，按需手动下载）」、「自动捕获 + 统计（红）」、「暂停待机（灰）」。
      - **当前曲目卡片**：展示当前 B 站标签页正在播放曲目的封面缩略图、标题、UP 主、分 P 信息（如 `P2 / 12`）。
      - **真实 DASH 音质与归档状态栏**：展示探针解析到的当前 `cid` 最高音质徽章（如 `Hi-Res 无损` / `杜比全景声` / `192K AAC`）、当前曲目在本地曲库的状态（`未下载` / `拉流归档中...` / `已归档 (.m4a)` / `已升级高音质`）。
-     - **快捷操作区**：提供「立即下载当前曲目」手动触发按钮（即使在“仅统计”模式下也可随时一键收藏当前歌曲）与「自动下载阈值 / 音质升级」轻量配置项。
+     - **快捷操作区**：提供「立即下载当前曲目」手动触发按钮（即使在“仅统计”模式下也可随时一键收藏当前歌曲）、「导出已下载音乐清单（复制到剪贴板 / 导出 `.md`/`.json`/`.csv` 文件）」与「自动下载阈值 / 音质升级」轻量配置项。
   2. **听歌排行榜 Tab（本地曲库与统计）**：
      - 顶部汇总卡片：累计听歌总时长、累计听歌曲目数、已归档本地曲目数。
      - 榜单列表：从 IndexedDB（`tracks` & `play_logs`）异步聚合渲染本地听歌排行榜（展示封面、歌名、UP 主、播放次数、累计时长、已存音质徽章）。
@@ -51,3 +51,7 @@
   - 实现 `player/server.mjs`（`127.0.0.1:19527` 本地 HTTP 服务、HTTP `206 Partial Content` Range 音频流、`fs.watch` 目录实时监听、`/api/sync/event` 与 `/api/sync/full` 联动接口）与 `player/start.mjs` + `start-player.bat` 独立窗口启动器
   - 实现 `player/public/{index.html,player.css,player.js}` 桌面播放器界面（4 种播放模式：列表循环 / 单曲循环 / 列表随机 / 全部音乐随机、Fisher-Yates 洗牌队列与历史回退栈、自定义歌单、真实听歌计时与跨端排行榜）
   - 升级扩展侧 `manifest.json`、`constants.js`、`db.js`、`player-sync.js`、`service-worker.js` 与 `popup/`，实现实时事件推送、Popup 一键双向同步与分端明细展示，并通过 `tests/player.test.mjs` 全部测试
+- [x] **Phase 6：桌面播放器原生 Google Drive 云端曲库 (`player/lib/gdrive.mjs` + `media-stream.mjs` + `tests/player.test.mjs`)**
+  - 实现零外部依赖 OAuth 2.0 PKCE 授权、每用户自带凭据隔离、父目录批查询扫库、本地与云端曲目智能去重融合、`206 Range` 透传播放与零额外带宽 2GB LRU 磁盘缓存、以及单曲/批量 Resumable 分片上传入口
+- [x] **Phase 7：双端已下载音乐清单导出（AI 查重专用）(`src/common/history-export.js` + `src/popup/*` + `player/*`)**
+  - 在 Chrome 扩展 Popup 与桌面播放器顶栏双端提供一键复制/文件导出（`.md` / `.json` / `.csv`），严格过滤已删除文件与未下载记录，仅保留当前仍存在于本地或 Google Drive 的曲目以便 AI 查重

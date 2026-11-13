@@ -35,7 +35,7 @@ flowchart LR
         PopupUI["popup.html / popup.css / popup.js<br/>当前曲目与真实音质徽章 / 模式切换 / 听歌排行榜"]
     end
 
-    Common["📦 src/common/ (ESM 共享核心)<br/>constants.js / messaging.js / db.js / sanitizer.js"]
+    Common["📦 src/common/ (ESM 共享核心)<br/>constants.js / messaging.js / db.js / sanitizer.js / history-export.js"]
 
     BridgeIso <-->|"chrome.runtime.sendMessage"| ServiceWorker
     PopupUI <-->|"chrome.runtime.sendMessage"| ServiceWorker
@@ -51,11 +51,11 @@ flowchart LR
 | :--- | :--- | :--- | :--- |
 | `manifest.json` | 全局清单 | JSON (MV3) | 声明精简权限（`downloads`, `storage`, `tabs`）、主机白名单（含 `127.0.0.1`/`localhost`）与双世界注入规则 |
 | `assets/icons/` | 扩展图标 | PNG (16/48/128) | 插件三态图标（待机灰、自动捕获红、纯统计绿） |
-| `src/common/` | SW / Popup | ES Modules | `constants.js`、`messaging.js`、`db.js`、`sanitizer.js` |
+| `src/common/` | SW / Popup / Player | ES Modules | `constants.js`、`messaging.js`、`db.js`、`sanitizer.js`、`history-export.js` |
 | `src/content/` | B站页面 (`video/*`, `list/*`) | **独立单文件（禁止 ESM）** | `probe-main.js`（主世界拦截、按 `cid` 缓存与拉流）与 `bridge-isolated.js`（隔离世界桥接与播放统计） |
-| `src/background/` | Service Worker | ES Modules | 消息中枢、听歌时长结算、预检去重、音质升级判断、下载落盘、旧文件清理与 `player-sync.js` 桌面端同步 |
-| `src/popup/` | Extension Popup | ES Modules | `360x520` 双 Tab 控台（Tab 1 曲目音质/下载控制/播放器联机同步 / Tab 2 本地听歌排行榜） |
-| `player/` & `start-player.bat` | 独立桌面软件 (Node.js) | ES Modules | `server.mjs`（本地 HTTP 服务 + `206` Range 音频流 + `fs.watch` 目录监听）、`lib/scanner.mjs`、`lib/store.mjs`（歌单/收藏/跨端计数合并）、`public/`（桌面播放器前端）、`start.mjs`（独立 `--app` 窗口启动器） |
+| `src/background/` | Service Worker | ES Modules | 消息中枢、听歌时长结算、预检去重、音质升级判断、下载落盘、旧文件清理、`player-sync.js` 桌面端同步与已下载清单导出 |
+| `src/popup/` | Extension Popup | ES Modules | `360x520` 双 Tab 控台（Tab 1 曲目音质/下载控制/播放器联机同步/已下载清单导出 / Tab 2 本地听歌排行榜） |
+| `player/` & `start-player.bat` | 独立桌面软件 (Node.js) | ES Modules | `server.mjs`（本地 HTTP 服务 + `206` Range 音频流 + `fs.watch` 目录监听 + Google Drive 接口 + `/api/export/history` 清单导出）、`lib/scanner.mjs`、`lib/media-stream.mjs`、`lib/gdrive.mjs`（OAuth 2.0 PKCE、批查询扫库、Range 透传 + 2GB LRU 磁盘缓存、分片上传）、`lib/store.mjs`（歌单/收藏/跨端计数与本地/云端混合合并）、`public/`（桌面播放器前端，含清单复制与下载导出）、`start.mjs`（独立 `--app` 窗口启动器） |
 
 ---
 

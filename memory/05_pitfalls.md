@@ -8,13 +8,13 @@
 
 | 领域代号 | 领域主题 | 规则数 | 关注痛点与技术边界 | 直达索引 |
 | :---: | :--- | :---: | :--- | :---: |
-| **MV3_ARCH** | ⚙️ 1. Chrome MV3 架构、模块边界与生命周期 | **3** | Content Script ESM 限制、SW 休眠丢失、扩展重载后上下文失效 | [查阅分类 ➔](#mv3_arch) |
+| **MV3_ARCH** | ⚙️ 1. Chrome MV3 架构、模块边界与生命周期 | **4** | Content Script ESM 限制、SW 休眠丢失、扩展重载后上下文失效、单测未隔离 `fetch` 污染本地播放器 | [查阅分类 ➔](#mv3_arch) |
 | **BILI_PROBE** | 🕵️ 2. Bilibili 页面探针、时序竞态与防串曲 | **3** | `document_start` 无损劫持、首屏 `__playinfo__`、后台推荐预加载串曲 | [查阅分类 ➔](#bili_probe) |
 | **DASH_FILE** | 📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 | **6** | `bilivideo.com` 403 与 DNR 失效、`video/mp4` 改写后缀、`onDeterminingFilename` 冲突、`Blob` 释放、`.bat` UTF-8 吞行、下载目录重定向 | [查阅分类 ➔](#dash_file) |
 
 ---
 
-## <a id="mv3_arch"></a>⚙️ 1. Chrome MV3 架构、模块边界与生命周期 (3 项)
+## <a id="mv3_arch"></a>⚙️ 1. Chrome MV3 架构、模块边界与生命周期 (4 项)
 
 ### <a id="pitfall-1"></a>#1 Content Script 严禁使用 ES Module `import`/`export` 语法
 - **问题根源**：虽然 `service-worker.js` 和 `popup.html` 支持 `"type": "module"`，但 Chrome `manifest.json` 的 `content_scripts` 默认以经典脚本注入，直接使用 `import` 会抛出 `SyntaxError: Cannot use import statement outside a module`。
@@ -27,6 +27,10 @@
 ### <a id="pitfall-3"></a>#3 扩展重新加载后旧标签页触发 `Extension context invalidated`
 - **问题根源**：在 `chrome://extensions` 重新加载扩展或扩展更新后，已打开的 B 站标签页中残留的旧 `bridge-isolated.js` 调用 `chrome.runtime.sendMessage` 会抛出 `Error: Extension context invalidated.`。
 - **避坑铁律**：`bridge-isolated.js` 中所有 `chrome.runtime.*` 调用与定时器必须检查 `chrome.runtime?.id` 并捕获该异常；一旦检测到上下文失效，立即停止旧脚本的心跳定时器，避免控制台持续报错刷屏。
+
+### <a id="pitfall-14"></a>#14 SW 单元测试未隔离 `globalThis.fetch` 导致假数据写入本地运行中的桌面播放器
+- **问题根源**：`DEFAULT_SETTINGS.enablePlayerSync` 默认为 `true`（指向 `http://127.0.0.1:19527`），而 `service-worker.js` 顶层初始化的 `playerSync` 在 `handleTrackDetected`、`handlePlayHeartbeat` 与下载完成回调中会异步调用 `globalThis.fetch` 向本地桌面播放器推送事件。若在桌面播放器（`player/start.mjs`）运行期间执行未屏蔽 `fetch` 的 Node 单元测试（如 `tests/phase2.test.mjs`、`tests/phase3.test.mjs`），测试曲目会被真实写入并持久化到 `player/data/library.json`。
+- **避坑铁律**：所有直接导入 `service-worker.js` 的单元测试必须拦截或桩化 `globalThis.fetch`（并在 `finally` 中等待异步微任务排空后再恢复原值），禁止测试期间向 `127.0.0.1:19527` 真实运行实例发包。
 
 ---
 
@@ -73,3 +77,7 @@
 ### <a id="pitfall-12"></a>#12 Windows “下载”文件夹被重定向至非 `USERPROFILE\Downloads` 路径
 - **问题根源**：许多 Windows 用户会将“下载”系统目录迁移至其他盘符（如注册表 `User Shell Folders\{374DE290-123F-4565-9164-39C4925E467B}` 为 `D:`，Chrome 即落盘至 `D:\BiliMusic`），而 Node.js `path.join(os.homedir(), 'Downloads', 'BiliMusic')` 只指向 `C:\Users\<user>\Downloads\BiliMusic`，导致首次打开播放器显示 `0` 首歌曲；且当 `User Shell Folders` 返回裸盘符 `D:` 时，Node `path.resolve('D:')` 会受当前工作目录影响。
 - **避坑铁律**：`player/lib/scanner.mjs` 必须读取 Windows 注册表真实“下载”路径（裸盘符补全反斜杠 `\`）并检查各盘符根目录下存在的 `BiliMusic`；同时 `store.mjs` 在收到 Chrome 插件推送的 `filename` 时自动反推并纳管实际归档目录。
+
+### <a id="pitfall-13"></a>#13 Node HTTP 流式代理中的 `req.on('close')` 误判与落盘缓存竞态
+- **问题根源**：在 Node.js 16+ / 24 的 `http.Server` 中，`GET` 请求的 `req.on('close')` 会在空请求体读取完成时即刻触发（此时上游流响应还没发送完），若用来中止上游 `fetch` 会导致流传输与边下边存失效；此外，若先调用 `res.end()` 再异步执行 `tmpStream.end()` 与 `fsp.rename()`，客户端在收到 `Content-Length` 全部字节后立刻发起的二次 `Range` 请求会错失本地缓存。
+- **避坑铁律**：客户端提前断连检测必须监听 `res.on('close', () => { if (!res.writableFinished) ... })`；边听边存时须在确认流完整后先 `await tmpStream.end` + `await fsp.rename(tmpPath, cachePath)`，再调用 `res.end()`，保证缓存原子就绪后再结束 HTTP 响应。

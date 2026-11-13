@@ -203,10 +203,32 @@ export function createPlayerSyncClient(deps = {}) {
     };
   }
 
+  /**
+   * 拉取桌面播放器完整实时曲库（连接失败静默降级）。
+   * @param {object} [settings]
+   * @returns {Promise<{ ok: boolean, tracks: Array<object>, summary?: object|null }>}
+   */
+  async function fetchLibrary(settings = {}) {
+    if (settings.enablePlayerSync === false) {
+      return { ok: false, skipped: 'disabled', tracks: [] };
+    }
+    const origin = resolveOrigin(settings);
+    const res = await requestJson(`${origin}/api/library`, { method: 'GET' });
+    if (!res.ok || !res.data?.ok || !Array.isArray(res.data.tracks)) {
+      return { ok: false, offline: true, tracks: [] };
+    }
+    return {
+      ok: true,
+      tracks: res.data.tracks,
+      summary: res.data.summary || null,
+    };
+  }
+
   return {
     getStatus,
     pushEvent,
     syncFull,
+    fetchLibrary,
     readSyncState,
   };
 }

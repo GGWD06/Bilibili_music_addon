@@ -510,6 +510,42 @@ function bindEvents() {
     }
   });
 
+  // 导出或复制已下载音乐清单（供 AI 查重审查）
+  async function runHistoryExport({ saveFile }) {
+    const format = els.exportFormat?.value || 'md';
+    els.btnCopyHistory.disabled = true;
+    els.btnExportHistory.disabled = true;
+    try {
+      const res = await sendToBackground(ACTION.EXPORT_DOWNLOAD_HISTORY, { format, saveFile });
+      if (!res?.ok) {
+        showToast(res?.error || '生成清单失败', 'error');
+        return;
+      }
+      if (res.empty || !res.count) {
+        showToast('当前暂无实际存在的已下载音乐', 'info');
+        return;
+      }
+      if (saveFile) {
+        showToast(`已导出 ${res.count} 首至下载目录: ${res.filename}`, 'success');
+        return;
+      }
+      if (globalThis.navigator?.clipboard?.writeText) {
+        try {
+          await globalThis.navigator.clipboard.writeText(res.content);
+          showToast(`已复制 ${res.count} 首清单，可直接粘贴给 AI`, 'success');
+          return;
+        } catch (_) {}
+      }
+      showToast('剪贴板不可用，请点击「导出文件」', 'error');
+    } finally {
+      els.btnCopyHistory.disabled = false;
+      els.btnExportHistory.disabled = false;
+    }
+  }
+
+  els.btnCopyHistory.addEventListener('click', () => runHistoryExport({ saveFile: false }));
+  els.btnExportHistory.addEventListener('click', () => runHistoryExport({ saveFile: true }));
+
   // 实时参数设置
   els.settingThreshold.addEventListener('change', () => {
     const val = Math.min(300, Math.max(3, Math.round(Number(els.settingThreshold.value) || 15)));
@@ -641,6 +677,9 @@ function init() {
   els.playerSyncDot = $('player-sync-dot');
   els.playerSyncText = $('player-sync-text');
   els.btnSyncPlayer = $('btn-sync-player');
+  els.exportFormat = $('export-format');
+  els.btnCopyHistory = $('btn-copy-history');
+  els.btnExportHistory = $('btn-export-history');
 
   els.settingThreshold = $('setting-threshold');
   els.settingSubfolder = $('setting-subfolder');

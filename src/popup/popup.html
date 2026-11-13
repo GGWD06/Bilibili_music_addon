@@ -92,6 +92,22 @@
           <button id="btn-sync-player" type="button" class="btn-sync">立即双向同步</button>
         </section>
 
+        <section class="card export-card" aria-label="导出已下载音乐清单">
+          <div class="export-head">
+            <span class="export-title">导出下载音乐清单</span>
+            <span class="export-hint">给 AI 查重 (不含已删)</span>
+          </div>
+          <div class="export-actions">
+            <select id="export-format" class="sort-select export-select" aria-label="导出清单格式">
+              <option value="md">Markdown (.md)</option>
+              <option value="json">JSON (.json)</option>
+              <option value="csv">CSV (.csv)</option>
+            </select>
+            <button id="btn-copy-history" type="button" class="btn-sync">复制给 AI</button>
+            <button id="btn-export-history" type="button" class="btn-sync btn-export-accent">导出文件</button>
+          </div>
+        </section>
+
         <section class="card settings-card">
           <div class="section-head">
             <span class="section-title">归档与采集设置</span>
