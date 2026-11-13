@@ -1,0 +1,43 @@
+# 🎛️ BiliMusic - 控制面板交互规范与演进路线图 (06_roadmap.md)
+
+本文档记录切换为 **DASH 原流直下 + 本地听歌统计** 后的 Popup 控制面板 (`src/popup/`) 交互规范及分阶段实现路线图。
+
+---
+
+## 1. 🖥️ Popup 控制面板规范 (`360x520`)
+
+- **视觉尺寸锁定**：固定面板宽度 `360px`、高度 `520px`，禁用整页横向滚动（`overflow-x: hidden`）。
+- **双 Tab 视图架构**：
+  1. **实时控台 Tab（当前曲目与捕获状态）**：
+     - **顶部模式切换栏**：支持一键切换三态工作模式——「自动捕获 + 统计（红）」、「仅听歌统计（绿）」、「暂停待机（灰）」。
+     - **当前曲目卡片**：展示当前 B 站标签页正在播放曲目的封面缩略图、标题、UP 主、分 P 信息（如 `P2 / 12`）。
+     - **真实 DASH 音质与归档状态栏**：展示探针解析到的最高音质徽章（如 `Hi-Res 无损` / `杜比全景声` / `192K AAC`）、当前曲目在本地曲库的状态（`未下载` / `拉流归档中...` / `已归档` / `已升级高音质`）。
+     - **快捷操作区**：提供「立即下载当前曲目」手动触发按钮（即使在“仅统计”模式下也可随时手动点按收藏当前好歌）与「自动下载阈值」轻量开关。
+  2. **听歌排行榜 Tab（本地曲库与统计）**：
+     - 顶部汇总卡片：累计听歌总时长、累计听歌曲目数、已归档本地无损/高码率曲目数。
+     - 榜单列表：从 IndexedDB（`tracks` & `play_logs`）异步聚合渲染本地听歌排行榜（展示封面、歌名、UP 主、播放次数、累计时长、已存音质标签）。
+- **非阻塞反馈**：严禁使用 `window.alert()` / `confirm()` / `prompt()`，所有提示通过面板内状态栏或轻量 Toast 反馈。
+
+---
+
+## 2. 🗺️ 模块实现路线图 (Implementation Roadmap)
+
+按 **“先跑通最小统计闭环（验证探针与数据库），再接入 DASH 原流无损落盘”** 的稳健顺序推进：
+
+- [x] **Phase 0**：工程目录骨架、`manifest.json` 搭建与 Git 仓库初始化
+- [x] **Phase 0.5**：确立 **DASH 原流直下 + 听歌统计** 三域架构（砍掉臃肿的 `tabCapture` 与 `Offscreen` 重编码链路），同步更新 `AGENTS.md` 与 `memory/` 知识库
+- [ ] **Phase 1：公共基础层 (`src/common/`)**
+  - 实现 `constants.js`（工作模式枚举、消息 Action、B 站 DASH 音质代号 `30251/30250/30280/30232/30216` 权重字典）
+  - 实现 `messaging.js`（三域统一消息信封与 `target` 路由过滤）
+  - 实现 `sanitizer.js`（三级文件名清洗流水线与单 P / 多 P 归档路径生成）
+  - 实现 `db.js`（IndexedDB `tracks` 主表与 `play_logs` 流水表 CRUD、排行榜聚合查询）
+- [ ] **Phase 2：双世界探针与听歌统计 MVP (`src/content/` + `service-worker.js` 统计链路)**
+  - 实现 `probe-main.js`（兼顾首屏 `window.__playinfo__` + 动态 `fetch`/`XHR` `/x/player/wbi/playurl` 拦截、读取 `window.__INITIAL_STATE__`、监听 SPA 切 P 与分 P 切换）
+  - 实现 `bridge-isolated.js`（消息桥接 + `<video>` 真实播放时长累加防拖动欺骗）
+  - 在 `service-worker.js` 打通曲目识别与 `play_logs` 落库，优先验证探针在各种 B 站视频/合集页的稳定性
+- [ ] **Phase 3：DASH 原流拉取、预检去重与落盘归档 (`src/background/` + `probe-main.js` 拉流)**
+  - 在 `probe-main.js` 实现带 `backupUrl` 自动容灾的 DASH 音频流 `fetch` 转 `Blob URL` 与释放机制
+  - 实现 `preflight.js`（IndexedDB 去重、`chrome.downloads.search` 本地文件存活校验、DASH 音质权重升级判断）
+  - 实现 `downloader.js`（`chrome.downloads.download` 落盘、失败保底重试、触发 `revokeObjectURL`、升级后清理旧低音质文件）
+- [ ] **Phase 4：Popup 双 Tab 控台与听歌排行榜 (`src/popup/` & 三态图标)**
+  - 实现 `popup.html`、`popup.css`、`popup.js`（360x520 实时控台、真实音质徽章、手动/自动下载控制、听歌排行榜）及三态状态栏图标切换

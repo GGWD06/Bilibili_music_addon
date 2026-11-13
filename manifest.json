@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "BiliMusic 原流捕获与听歌统计",
+  "version": "1.0.0",
+  "description": "自动解析并捕获 Bilibili 音乐视频 DASH 原始音频流（支持 Hi-Res 无损与音质升级替换）、分P自动归档与本地听歌排行榜统计。",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "BiliMusic 控制台",
+    "default_popup": "src/popup/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "downloads",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://*.hdslb.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.bilibili.com/video/*",
+        "*://www.bilibili.com/list/*"
+      ],
+      "js": ["src/content/probe-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://www.bilibili.com/video/*",
+        "*://www.bilibili.com/list/*"
+      ],
+      "js": ["src/content/bridge-isolated.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "minimum_chrome_version": "116"
+}
