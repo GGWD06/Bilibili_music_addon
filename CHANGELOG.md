@@ -4,6 +4,17 @@
 
 ---
 
+### [2026-11-13] - 完成 Phase 1 公共基础层 (`src/common/`) 与单元测试
+- **所属模块**：Common 公共层与测试 (`src/common/constants.js`, `messaging.js`, `sanitizer.js`, `db.js`, `tests/common.test.mjs`)
+- **核心变更**：
+  1. 实现 `constants.js`：定义 `WORK_MODE`、`DOWNLOAD_STATUS`、`MSG_TARGET`、`ACTION`、`STORAGE_KEYS`、`DEFAULT_SETTINGS`、`DASH_QUALITY_MAP` 及 `getQualityInfo`/`compareQuality`/`pickBestAudioTrack`。
+  2. 实现 `messaging.js`：定义版本化消息信封 `createEnvelope`、`isEnvelopeFor`、`createMessageRouter` 与 `sendToBackground`/`notifyPopup`/`sendToTab`。
+  3. 实现 `sanitizer.js`：实现防控制符、非法字符、`..` 穿越、Windows 保留设备名、Emoji 代理对拆断及路径长度控制的 `sanitizeSegment`/`sanitizeArchiveDir`/`buildArchiveFilename`/`buildFallbackFilename`。
+  4. 实现 `db.js`：建立 `bilimusic_db`（`tracks` 主表 + `play_logs` 流水表，支持按 `sessionId` 合并同次播放心跳与 `counted` 阈值防虚增），提供 `recordPlayProgress`/`markTrackDownloaded`/`clearTrackDownload`/`getLeaderboard`/`clearListeningStats`。
+  5. 新增零依赖 `tests/common.test.mjs`（含轻量内存 `IDBFactory`），5/5 用例全部通过。
+- **原因与机理**：先打牢零外部依赖原生 ESM 公共层并通过自动化单元测试验证，消除核心算法与数据库聚合边界隐患。
+- **后续注意事项**：进入 Phase 2（`probe-main.js`、`bridge-isolated.js` 与 `service-worker.js` 听歌统计 MVP）。
+
 ### [2026-11-13] - 完成下载链路与防串曲 Spike 实测验证，锁定最终架构并更新全套规范文档
 - **所属模块**：全局架构设计、避坑指南与演进路线图 (`AGENTS.md`, `MEMORY.md`, `memory/01~06`)
 - **核心变更**：

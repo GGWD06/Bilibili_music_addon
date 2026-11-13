@@ -29,11 +29,11 @@
 - [x] **Phase 0.8：下载链路与防串曲实测验证（Spike 已闭环并清理）**
   - 实测验证 `T2`（页面侧 `fetch` ➔ `Blob URL` ➔ SW `chrome.downloads.download`）在 `akamaized.net` 与 `bilivideo.com` 节点下均 100% 落入子目录（排除在 `bilivideo.com` 下会 403 的直链/DNR 方案与破坏子目录命名的 `onDeterminingFilename` 方案）
   - 实测验证 `cacheByCid` 按 `cid` 隔离缓存机制，成功拦截并隔离单页后台触发的 5 个推荐视频预加载 `playurl` 请求
-- [ ] **Phase 1：公共基础层 (`src/common/`)**
+- [x] **Phase 1：公共基础层 (`src/common/` + `tests/common.test.mjs`)**
   - 实现 `constants.js`（工作模式枚举、消息 Action、B 站 DASH 音质代号 `30251/30250/30280/30232/30216` 权重字典与统一 `.m4a` 扩展名）
   - 实现 `messaging.js`（三域统一消息信封与 `target` 路由过滤）
   - 实现 `sanitizer.js`（三级文件名清洗流水线与单 P / 多 P 归档路径生成）
-  - 实现 `db.js`（IndexedDB `tracks` 主表与 `play_logs` 流水表 CRUD、排行榜聚合查询）
+  - 实现 `db.js`（IndexedDB `tracks` 主表与 `play_logs` 流水表 CRUD、排行榜聚合查询），并通过 `node --test` 单元测试验证
 - [ ] **Phase 2：双世界探针与听歌统计 MVP (`src/content/` + `service-worker.js` 统计链路)**
   - 实现 `probe-main.js`（`cacheByCid` 按 `cid` 隔离缓存首屏 `window.__playinfo__` 与动态 `fetch`/`XHR` `playurl`、校验 URL 与 `window.__INITIAL_STATE__` 同步状态、监听 SPA 切 P 与切歌）
   - 实现 `bridge-isolated.js`（消息桥接、`<video>` 真实挂钟播放时长累加防拖动欺骗、扩展重载 `Extension context invalidated` 安全自停）
