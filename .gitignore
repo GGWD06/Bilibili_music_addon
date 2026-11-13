@@ -10,3 +10,10 @@ Thumbs.db
 desktop.ini
 .env
 .env.*
+
+# Local AI agent rules, memory bank & changelog (kept locally, excluded from GitHub)
+AGENTS.md
+MEMORY.md
+CHANGELOG.md
+memory/
+.agents/

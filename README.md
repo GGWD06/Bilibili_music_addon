@@ -43,7 +43,6 @@
 | `src/popup/` | `360x520` 双 Tab 控台（实时控台 / 听歌排行榜 / 清单导出） |
 | `player/` & `start-player.bat` | 独立桌面播放器：`start.mjs`、`server.mjs`、`lib/{scanner,media-stream,store,gdrive}.mjs` 及 `public/` 前端 |
 | `tests/` | 基于 Node.js 原生 `node --test` 的单元与集成测试（`common`, `phase2`, `phase3`, `phase4`, `player`） |
-| `memory/` & `CHANGELOG.md` | 架构拓扑、数据模型、避坑指南、路线图与变更日志（索引见 `MEMORY.md`） |
 
 ---
 
@@ -84,12 +83,3 @@
 ```bash
 node --test tests/*.test.mjs
 ```
-
----
-
-## 📚 开发文档与记忆库
-
-- [MEMORY.md](./MEMORY.md)：核心记忆库总索引与架构安全红线
-- [memory/README.md](./memory/README.md)：六大领域知识文档（架构拓扑、数据模型、DASH 拉流落盘、双世界探针、黄金避坑指南、UI 与路线图）
-- [CHANGELOG.md](./CHANGELOG.md)：按时间线记录的功能迭代与架构变更流水
-- [AGENTS.md](./AGENTS.md)：工作区工程规范与记忆库同步准则
