@@ -38,9 +38,11 @@
   - 实现 `probe-main.js`（`cacheByCid` 按 `cid` 隔离缓存首屏 `window.__playinfo__` 与动态 `fetch`/`XHR` `playurl`、缓存 `/view` 与 `/v2` 适配 SPA 切歌、支持 `backupUrl` 容灾拉流与 `audio/x-m4a` Blob URL 管理）
   - 实现 `bridge-isolated.js`（消息桥接、`<video>` 真实挂钟播放时长累加防拖动欺骗、扩展重载 `Extension context invalidated` 安全自停）
   - 实现 `service-worker.js` 统计与路由底座（`withTabQueue` 防并发重复计数、`storage.session` 状态持久化、三态角标同步与排行榜查询路由），并通过 3 项沙箱与集成测试
-- [ ] **Phase 3：DASH 原流拉取、预检去重与落盘归档 (`src/background/` + `probe-main.js` 拉流)**
-  - 在 `probe-main.js` 实现带 `backupUrl` 自动容灾的 DASH 音频流 `fetch`、修正 `audio/x-m4a` MIME 生成 `Blob URL` 及双保险释放机制
-  - 实现 `preflight.js`（IndexedDB 去重、`chrome.downloads.search` 本地文件存活校验、DASH 音质权重升级判断）
-  - 实现 `downloader.js`（`chrome.downloads.download` 落盘、失败保底文件名重试、触发 `revokeObjectURL`、升级后清理旧低音质文件）
-- [ ] **Phase 4：Popup 双 Tab 控台与听歌排行榜 (`src/popup/` & 三态图标)**
-  - 实现 `popup.html`、`popup.css`、`popup.js`（`360x520` 实时控台、真实音质徽章、手动/自动下载控制、听歌排行榜）及三态状态栏图标切换
+- [x] **Phase 3：DASH 原流拉取、预检去重与落盘归档 (`src/background/` + `tests/phase3.test.mjs`)**
+  - 完成 `preflight.js`（IndexedDB 去重、`chrome.downloads.search` 本地存活校验、`clearTrackDownload` 断链修复、`QUALITY_UPGRADE` 与 `durl` 守卫）
+  - 完成 `downloader.js`（基于 `chrome.storage.session` 持久化与 `inFlightFinalizes` 锁，支持异常/中断双段 `fallbackFilename` 重试、升级 `removeFile` + `erase` 与 `REVOKE_BLOB_URL` 回收）
+  - 在 `service-worker.js` 完整挂接心跳阈值自动捕获、手动下载 `MANUAL_DOWNLOAD`、`DASH_BLOB_READY`/`FAILED` 回调与 `downloads.onChanged` 监听，并通过 `tests/phase3.test.mjs` 验证
+- [x] **Phase 4：Popup 双 Tab 控台、听歌排行榜与三态图标 (`src/popup/` & `assets/icons/` & `tests/phase4.test.mjs`)**
+  - 生成并绑定三态扩展栏图标（`AUTO` 粉 / `STAT` 绿 / `OFF` 灰，`16/48/128px` 抗锯齿 PNG 配合 `chrome.action.setIcon` 与 `MODE_UI_META.iconPaths`）
+  - 完成 `360x520` 双 Tab Popup 控台（实时控台展示封面/分 P/真实音质徽章/归档状态/阈值进度/手动触发/参数实时保存；听歌榜展示 KPI 汇总/时间范围筛选/排序/两步内联确认清空），严禁使用阻塞弹窗与 CSP 违规内联脚本
+  - 新增 `tests/phase4.test.mjs` 验证 DOM ID 契约、无阻塞弹窗规范与 UI 交互闭环

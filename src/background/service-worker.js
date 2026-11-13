@@ -18,10 +18,13 @@ import {
   makeTrackKey,
   getTrack,
   upsertTrackMeta,
+  clearTrackDownload,
   recordPlayProgress,
   getLeaderboard,
   clearListeningStats,
 } from '../common/db.js';
+import { evaluateDownloadCandidate } from './preflight.js';
+import { createDownloader } from './downloader.js';
 
 /** 串行化 session 状态写入，避免并发心跳与探测互相覆盖 */
 let sessionWriteChain = Promise.resolve();
@@ -59,9 +62,14 @@ async function saveSettings(nextSettings) {
   return nextSettings;
 }
 
-/** 同步扩展栏三态角标（红 AUTO / 绿 STAT / 灰 OFF） */
+/** 同步扩展栏三态角标与扩展图标（红 AUTO / 绿 STAT / 灰 OFF） */
 export async function syncActionBadge(mode) {
   const meta = MODE_UI_META[mode] || MODE_UI_META[WORK_MODE.AUTO_CAPTURE];
+  try {
+    if (meta.iconPaths && chrome.action?.setIcon) {
+      await chrome.action.setIcon({ path: meta.iconPaths });
+    }
+  } catch (_) {}
   try {
     await chrome.action.setBadgeText({ text: meta.badgeText });
     await chrome.action.setBadgeBackgroundColor({ color: meta.badgeColor });
@@ -104,6 +112,78 @@ async function resolveTargetTabId(explicitTabId) {
   return tabs[0] && Number.isInteger(tabs[0].id) ? tabs[0].id : null;
 }
 
+/** 全局下载调度器实例（动态读取 chrome.downloads / chrome.storage.session 便于单测注入） */
+export const downloader = createDownloader({
+  onStatusUpdate: async (tabId, trackKey, patch) => {
+    if (!Number.isInteger(tabId) || tabId < 0) return;
+    let updatedCurrent = false;
+    await updateTabState(tabId, (prev) => {
+      if (!prev || prev.trackKey !== trackKey) return prev;
+      updatedCurrent = true;
+      return {
+        ...prev,
+        ...patch,
+        trackStats: patch.trackStats ? { ...prev.trackStats, ...patch.trackStats } : prev.trackStats,
+        updatedAt: Date.now(),
+      };
+    });
+    if (
+      !updatedCurrent &&
+      (patch.downloadStatus === DOWNLOAD_STATUS.COMPLETED || patch.downloadStatus === DOWNLOAD_STATUS.UPGRADED)
+    ) {
+      notifyPopup(ACTION.POPUP_STATE_UPDATED, { downloadCompletedTrackKey: trackKey });
+    }
+  },
+});
+
+/** 执行下载预检并在满足条件时下发页面侧 DASH 原流拉取 */
+async function triggerDownloadForTab(tabId, { forceManual = false } = {}) {
+  const settings = await getSettings();
+  const states = await getTabStates();
+  const tabState = states[tabId];
+  if (!tabState) {
+    return { ok: false, error: '当前标签页暂无可下载的 B 站音轨，请先播放或刷新页面' };
+  }
+
+  const hasActiveTask = await downloader.hasPendingForTrack(tabState.trackKey);
+  const decision = await evaluateDownloadCandidate({
+    tabState,
+    settings,
+    forceManual,
+    hasActiveTask,
+  });
+
+  if (!decision.shouldDownload) {
+    if (
+      tabState.downloadStatus !== decision.status &&
+      (decision.status === DOWNLOAD_STATUS.UNSUPPORTED_DURL || decision.status === DOWNLOAD_STATUS.COMPLETED)
+    ) {
+      await updateTabState(tabId, (prev) => {
+        if (!prev || prev.trackKey !== tabState.trackKey) return prev;
+        return { ...prev, downloadStatus: decision.status, updatedAt: Date.now() };
+      });
+    }
+    return {
+      ok: false,
+      skipped: true,
+      reason: decision.reason,
+      status: decision.status,
+      existingFilename: decision.existingFilename || null,
+    };
+  }
+
+  const res = await downloader.requestDashFetch({
+    tabId,
+    tabState,
+    decision,
+    settings,
+  });
+  return {
+    ...res,
+    isUpgrade: Boolean(decision.isUpgrade),
+  };
+}
+
 /** 处理探针上报的当前在播曲目与 DASH 音轨信息 */
 export async function handleTrackDetected(payload, sender) {
   const tabId = sender?.tab?.id;
@@ -123,16 +203,30 @@ export async function handleTrackDetected(payload, sender) {
       dbTrack = await upsertTrackMeta(meta);
     }
 
-    const tabState = await updateTabState(tabId, (prev) => {
+    let hasCompletedDownload = Boolean(dbTrack && dbTrack.downloadId != null);
+    if (hasCompletedDownload && globalThis.chrome?.downloads?.search) {
+      try {
+        const items = await chrome.downloads.search({ id: dbTrack.downloadId });
+        const item = Array.isArray(items) ? items[0] : null;
+        if (!item || item.state !== 'complete' || item.exists === false) {
+          hasCompletedDownload = false;
+          await clearTrackDownload(trackKey);
+          dbTrack = { ...dbTrack, downloadId: null, qualityId: null, codecs: '', filename: null };
+        }
+      } catch (_) {}
+    }
+
+    const hasActiveDownload = await downloader.hasPendingForTrack(trackKey);
+    let tabState = await updateTabState(tabId, (prev) => {
       const sameTrack = prev && prev.trackKey === trackKey;
       const sameSession = sameTrack && prev.sessionId === payload.sessionId;
       let downloadStatus = DOWNLOAD_STATUS.IDLE;
 
       if (payload.hasDurl && !bestAudio) {
         downloadStatus = DOWNLOAD_STATUS.UNSUPPORTED_DURL;
-      } else if (sameTrack && prev.downloadStatus === DOWNLOAD_STATUS.DOWNLOADING) {
+      } else if (hasActiveDownload || (sameTrack && prev.downloadStatus === DOWNLOAD_STATUS.DOWNLOADING)) {
         downloadStatus = DOWNLOAD_STATUS.DOWNLOADING;
-      } else if (dbTrack && dbTrack.downloadId != null) {
+      } else if (hasCompletedDownload) {
         downloadStatus = DOWNLOAD_STATUS.COMPLETED;
       }
 
@@ -160,6 +254,18 @@ export async function handleTrackDetected(payload, sender) {
         updatedAt: Date.now(),
       };
     });
+
+    if (
+      settings.mode === WORK_MODE.AUTO_CAPTURE &&
+      tabState?.sessionCounted &&
+      tabState?.bestAudio &&
+      tabState.downloadStatus !== DOWNLOAD_STATUS.DOWNLOADING &&
+      (!hasCompletedDownload || settings.enableQualityUpgrade)
+    ) {
+      await triggerDownloadForTab(tabId, { forceManual: false });
+      const latestStates = await getTabStates();
+      tabState = latestStates[tabId] || tabState;
+    }
 
     return { ok: true, trackKey, tabState };
   });
@@ -235,12 +341,18 @@ export async function handlePlayHeartbeat(payload, sender) {
       };
     });
 
-    // Phase 3 接入点：当 reachedThresholdNow && settings.mode === WORK_MODE.AUTO_CAPTURE 时触发 preflight 自动拉流归档
+    let downloadTrigger = null;
+    if (reachedThresholdNow && settings.mode === WORK_MODE.AUTO_CAPTURE) {
+      downloadTrigger = await triggerDownloadForTab(tabId, { forceManual: false });
+    }
+    const latestTabState = downloadTrigger ? (await getTabStates())[tabId] || tabState : tabState;
+
     return {
       ok: true,
       reachedThresholdNow,
       mode: settings.mode,
-      tabState,
+      tabState: latestTabState,
+      downloadTrigger,
     };
   });
 }
@@ -304,6 +416,24 @@ export async function handleClearStats() {
   return { ok: true };
 }
 
+/** 响应 Popup 点击立即下载（绕过工作模式，触发单曲预检与音质升级判断） */
+export async function handleManualDownload(payload) {
+  const tabId = await resolveTargetTabId(payload?.tabId);
+  if (!Number.isInteger(tabId)) {
+    return { ok: false, error: '未找到可用的活动标签页' };
+  }
+  return withTabQueue(tabId, () => triggerDownloadForTab(tabId, { forceManual: true }));
+}
+
+/** 处理 Chrome 下载状态变更通知，完结归档与释放 Blob URL */
+export async function handleDownloadChanged(delta) {
+  if (!delta || delta.id == null) return;
+  const nextState = delta.state?.current;
+  if (nextState === 'complete' || nextState === 'interrupted') {
+    await downloader.finalizeDownload(delta.id);
+  }
+}
+
 // ---- 路由注册 ----
 export const messageRouter = createMessageRouter(MSG_TARGET.BACKGROUND, {
   [ACTION.TRACK_DETECTED]: handleTrackDetected,
@@ -311,12 +441,21 @@ export const messageRouter = createMessageRouter(MSG_TARGET.BACKGROUND, {
   [ACTION.GET_POPUP_STATE]: handleGetPopupState,
   [ACTION.SET_WORK_MODE]: handleSetWorkMode,
   [ACTION.UPDATE_SETTINGS]: handleUpdateSettings,
+  [ACTION.MANUAL_DOWNLOAD]: handleManualDownload,
+  [ACTION.DASH_BLOB_READY]: (payload, sender) => downloader.handleDashBlobReady(payload, sender),
+  [ACTION.DASH_BLOB_FAILED]: (payload, sender) => downloader.handleDashBlobFailed(payload, sender),
   [ACTION.GET_LEADERBOARD]: (payload) => getLeaderboard(payload || {}),
   [ACTION.CLEAR_STATS]: handleClearStats,
 });
 
 if (typeof chrome !== 'undefined' && chrome.runtime) {
   chrome.runtime.onMessage.addListener(messageRouter);
+
+  if (chrome.downloads?.onChanged) {
+    chrome.downloads.onChanged.addListener((delta) => {
+      handleDownloadChanged(delta).catch(() => {});
+    });
+  }
 
   chrome.runtime.onInstalled.addListener(async () => {
     const settings = await getSettings();

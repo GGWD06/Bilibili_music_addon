@@ -4,6 +4,16 @@
 
 ---
 
+### [2026-11-13] - 完成 Phase 3~4 预检落盘调度、三态扩展图标与双 Tab Popup 控制台
+- **所属模块**：Background 下载管线、图标资源与 Popup 控台 (`src/common/constants.js`, `src/background/preflight.js`, `downloader.js`, `service-worker.js`, `src/popup/popup.{html,css,js}`, `assets/icons/*`, `tests/phase3.test.mjs`, `tests/phase4.test.mjs`)
+- **核心变更**：
+  1. 实现 `preflight.js` 与 `downloader.js` 并接入 `service-worker.js`：打通 `AUTO_CAPTURE` 播放阈值自动触发、`STATS_ONLY` 下 `MANUAL_DOWNLOAD` 手动一键捕获、`chrome.downloads.search` 本地失活清理重下、更高音质替换（`removeFile` + `erase` 旧档）、`FILE_`/`PATH` 中断降级保底文件名重试、`inFlightFinalizes` 锁消除状态竞态，以及完结/失败后通过 `REVOKE_BLOB_URL` 回收页面 `Blob` 内存。
+  2. 生成 9 张抗锯齿三态图标（`icon-{16,48,128}.png` 粉 / `icon-stats-*.png` 绿 / `icon-paused-*.png` 灰），在 `MODE_UI_META` 增加 `iconPaths` 并在 `syncActionBadge` 与 Popup 顶部同步切换图标与角标。
+  3. 实现 `src/popup/popup.html`、`popup.css` 与 `popup.js`（`360x520`、`overflow-x: hidden`、MV3 CSP 零内联脚本、XSS 安全纯文本 DOM 构建与非阻塞 Toast + 两步内联确认清空统计）：提供「实时控台」与「听歌排行榜」双视图。
+  4. 新增 `tests/phase3.test.mjs` 与 `tests/phase4.test.mjs`，全套 `node --test` 12/12 用例与全量 `node --check` 全部通过。
+- **原因与机理**：补齐“探针感知 ➔ 预检去重/升格 ➔ 页面侧防盗链拉流与 MIME 修正 ➔ 落盘释放内存 ➔ 用户双 Tab 控台实时观测与手动控制”的完整业务闭环。
+- **后续注意事项**：可直接在 Chrome `chrome://extensions/` 加载已解压扩展 `d:\music_addon` 进行真机实听与归档验收；若扩展重新加载前 B 站标签页已打开，需刷新对应 B 站标签页注入最新双世界探针。
+
 ### [2026-11-13] - 完成 Phase 2 双世界探针与 Service Worker 听歌统计 MVP
 - **所属模块**：Content 双世界探针与 Background 后台 (`src/content/probe-main.js`, `src/content/bridge-isolated.js`, `src/background/service-worker.js`, `tests/phase2.test.mjs`)
 - **核心变更**：

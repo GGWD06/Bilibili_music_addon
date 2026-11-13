@@ -24,19 +24,20 @@
 
 ## 2. 📥 下载前预检与音质升级判断 (`src/background/preflight.js`)
 
-1. **去重查询**：根据当前曲目的 `trackKey`（`${bvid}_${cid}`）查询 IndexedDB `tracks` 表是否已有归档记录。
-2. **本地文件存活校验**：若数据库显示已下载且存有 `downloadId`，调用 `chrome.downloads.search({ id: downloadId })` 检查记录是否存在且 `exists !== false`——若用户已在磁盘上手动删除该文件，则自动放行重新下载。
+1. **前置与去重查询**：`evaluateDownloadCandidate` 检查曲目 `bvid/cid`、有效 DASH `baseUrl`、`hasActiveTask` 及当前标签页下载锁；命中历史记录时根据 `trackKey`（`${bvid}_${cid}`）查询 IndexedDB `tracks` 表。
+2. **本地文件存活校验**：若数据库存有 `downloadId`，调用 `chrome.downloads.search({ id: downloadId })` 检查记录是否 `complete` 且 `exists !== false`——若用户已在磁盘删除文件，则先调用 `clearTrackDownload` 清理失活下载字段，再返回 `MISSING_LOCAL_FILE` 放行重下。
 3. **真无损/高码率音质升级判断**：
-   - 比对本次捕获的 DASH 音质代号权重与历史已落盘的 `qualityId` 权重。
-   - 若新流音质权重更高（如从 `30232` 132K 升级为 `30280` 192K 或 `30251` Hi-Res），则标记为 `UPGRADE` 并附带 `oldDownloadId`，允许拉流下载新文件并在落盘成功后清理旧版低音质文件。
+   - 比对本次捕获的 DASH 音质权重与已落盘的 `qualityId` 权重。
+   - 当启用自动升级（`settings.enableQualityUpgrade`）或处于手动点击（`forceManual`）且新流权重更高时，返回 `QUALITY_UPGRADE`（附带 `isUpgrade: true` 与 `oldDownloadId`）。若已存在同级/更高音质文件，则返回 `ALREADY_EXISTS`（手动返回 `COMPLETED` 提示，自动返回 `SKIPPED`）。
 4. **旧版 `durl` 视频降级保护**：
-   - 针对极少数仅有 `durl`（音画合流 MP4/FLV）而无 `dash.audio` 分离音频流的远古视频，标记为“无分离音轨”，仅记录听歌统计而不拉取大体积视频流。
+   - 针对仅有 `durl` 而无 `dash.audio` 的老视频返回 `UNSUPPORTED_DURL`，仅记录听歌统计而不拉取大体积视频流。
 
 ---
 
 ## 3. 💾 落盘归档与旧档清理 (`src/background/downloader.js`)
 
+- **状态持久化防休眠**：待拉取与进行中下载映射表写入 `chrome.storage.session`（`PENDING_DOWNLOADS`，5 分钟 TTL），并通过 `inFlightFinalizes` 锁消除 `chrome.downloads.download` 秒级完成时与 `chrome.downloads.onChanged` 的竞态重复结算。
 - **安全路径落盘**：使用经 `src/common/sanitizer.js` 清洗的相对路径（`BiliMusic/.../*.m4a`）调用 `chrome.downloads.download({ url: blobUrl, filename, conflictAction: 'uniquify', saveAs: false })`。
 - **严禁注册全局空 `onDeterminingFilename`**：避免覆盖扩展自身传入的 `filename` 子目录路径或干扰用户浏览器的其他下载任务。
-- **失败降级保底**：若因极端路径长度或特殊字符导致 `chrome.downloads.download` 报错，自动回退至保底短文件名 `BiliMusic/${bvid}_${cid}_${qualityId}.m4a` 重试。
-- **音质升级旧档清理**：当 `UPGRADE` 任务的新文件下载完成后，尝试调用 `chrome.downloads.removeFile(oldDownloadId)` 清理旧版低音质文件，并更新 IndexedDB `tracks` 表记录。
+- **双段失败降级保底**：不仅在 `chrome.downloads.download` 直接抛错时回退至保底短文件名（`BiliMusic/${bvid}_${cid}_${qualityId}.m4a`），在异步收到 `state === 'interrupted'` 且错误匹配 `/FILE_|PATH/i` 时也会原地复用同一 `Blob URL` 降级重下。
+- **音质升级旧档清理与内存释放**：下载 `complete` 后写入 `markTrackDownloaded`；若为升级任务则调用 `chrome.downloads.removeFile(oldDownloadId)` 与 `erase({ id: oldDownloadId })` 清理旧版低音质文件；无论完成或最终失败均下发 `REVOKE_BLOB_URL` 回收页面 `Blob` 内存。

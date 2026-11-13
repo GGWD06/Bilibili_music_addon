@@ -7,7 +7,153 @@
   <link rel="stylesheet" href="./popup.css" />
 </head>
 <body>
-  <div id="app"></div>
+  <div id="app" class="popup-shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-left">
+          <img id="brand-icon" class="brand-icon" src="../../assets/icons/icon-48.png" alt="BiliMusic" />
+          <div class="brand-titles">
+            <span class="brand-name">BiliMusic</span>
+            <span class="brand-sub">B站原流捕获 · 听歌统计</span>
+          </div>
+        </div>
+        <span id="mode-pill" class="mode-pill mode-auto">AUTO</span>
+      </div>
+
+      <div class="mode-switch" role="group" aria-label="工作模式切换">
+        <button type="button" class="mode-btn" data-mode="AUTO_CAPTURE">自动捕获</button>
+        <button type="button" class="mode-btn" data-mode="STATS_ONLY">纯统计</button>
+        <button type="button" class="mode-btn" data-mode="PAUSED">暂停</button>
+      </div>
+
+      <nav class="tab-bar" role="tablist" aria-label="主视图切换">
+        <button type="button" class="tab-btn is-active" data-tab="live" role="tab" aria-selected="true">实时控台</button>
+        <button type="button" class="tab-btn" data-tab="leaderboard" role="tab" aria-selected="false">听歌排行榜</button>
+      </nav>
+    </header>
+
+    <main class="main-body">
+      <!-- Tab 1: 实时控台 -->
+      <section id="panel-live" class="tab-panel is-active" role="tabpanel">
+        <div id="empty-track-state" class="card empty-card">
+          <div class="empty-badge">♫</div>
+          <p class="empty-title">暂未捕获到 B 站播放曲目</p>
+          <p class="empty-desc">打开任意 B 站视频页并开始播放，扩展将自动识别无损/高音质 DASH 原流（若刚安装或重载扩展，请刷新该 B 站标签页）。</p>
+        </div>
+
+        <div id="track-card" class="card track-card is-hidden">
+          <div class="track-header">
+            <div class="cover-wrap">
+              <img id="track-cover" class="track-cover is-hidden" alt="封面" referrerpolicy="no-referrer" />
+              <div id="track-cover-fallback" class="cover-fallback">♫</div>
+            </div>
+            <div class="track-meta">
+              <h2 id="track-title" class="track-title"></h2>
+              <p id="track-part" class="track-part is-hidden"></p>
+              <p id="track-owner-row" class="track-owner-row">
+                <span id="track-owner"></span>
+                <span class="dot">·</span>
+                <span id="track-bvid" class="mono"></span>
+              </p>
+            </div>
+          </div>
+
+          <div class="badge-row">
+            <span id="quality-badge" class="pill pill-muted">未探测音轨</span>
+            <span id="download-status-pill" class="pill pill-muted">未归档</span>
+          </div>
+
+          <div class="progress-block">
+            <div class="progress-head">
+              <span class="progress-label">本次播放计数阈值</span>
+              <span id="threshold-text" class="progress-value mono">0 / 15s</span>
+            </div>
+            <div class="progress-track">
+              <div id="threshold-bar" class="progress-fill"></div>
+            </div>
+          </div>
+
+          <div class="stats-meta-row">
+            <span id="track-stats-line" class="stats-summary">累计播放 0 次 · 00:00</span>
+          </div>
+          <p id="track-filename-line" class="filename-line mono is-hidden"></p>
+          <p id="download-error-box" class="error-line is-hidden"></p>
+
+          <div class="action-row">
+            <button id="btn-manual-download" type="button" class="btn-primary">立即下载 (.m4a)</button>
+          </div>
+        </div>
+
+        <section class="card settings-card">
+          <div class="section-head">
+            <span class="section-title">归档与采集设置</span>
+            <span class="section-hint">自动保存</span>
+          </div>
+          <div class="settings-grid">
+            <label class="field-box" for="setting-threshold">
+              <span class="field-label">捕获阈值 (秒)</span>
+              <input id="setting-threshold" type="number" min="3" max="300" step="1" class="field-input mono" />
+            </label>
+            <label class="field-box" for="setting-subfolder">
+              <span class="field-label">归档子目录</span>
+              <input id="setting-subfolder" type="text" maxlength="40" placeholder="BiliMusic" class="field-input" />
+            </label>
+          </div>
+          <label class="toggle-row" for="setting-upgrade">
+            <span class="toggle-text">发现更高音质时自动替换旧档</span>
+            <input id="setting-upgrade" type="checkbox" class="toggle-input" />
+          </label>
+          <label class="toggle-row" for="setting-multipart">
+            <span class="toggle-text">多 P 合集按视频标题建子目录</span>
+            <input id="setting-multipart" type="checkbox" class="toggle-input" />
+          </label>
+        </section>
+      </section>
+
+      <!-- Tab 2: 听歌排行榜 -->
+      <section id="panel-leaderboard" class="tab-panel" role="tabpanel">
+        <div class="kpi-strip">
+          <div class="kpi-card">
+            <span class="kpi-label">收听曲目</span>
+            <strong id="kpi-tracks" class="kpi-num mono">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">有效播放</span>
+            <strong id="kpi-plays" class="kpi-num mono">0</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">累计时长</span>
+            <strong id="kpi-duration" class="kpi-num mono">0m</strong>
+          </div>
+        </div>
+
+        <div class="lb-toolbar">
+          <div class="period-pills" role="group" aria-label="统计时间范围">
+            <button type="button" class="period-btn is-active" data-days="0">全部</button>
+            <button type="button" class="period-btn" data-days="7">近7天</button>
+            <button type="button" class="period-btn" data-days="30">近30天</button>
+          </div>
+          <div class="lb-controls">
+            <select id="lb-sort" class="sort-select" aria-label="排序依据">
+              <option value="totalPlayedSeconds">按时长</option>
+              <option value="playCount">按次数</option>
+            </select>
+            <button id="btn-clear-stats" type="button" class="btn-danger-ghost">清空统计</button>
+          </div>
+        </div>
+
+        <div id="lb-empty" class="card empty-card is-hidden">
+          <div class="empty-badge">♪</div>
+          <p class="empty-title">暂无听歌统计流水</p>
+          <p class="empty-desc">开始收听 B 站歌曲后，这里将按播放次数与真实停留时长为你生成个人听歌榜。</p>
+        </div>
+
+        <ul id="lb-list" class="lb-list"></ul>
+      </section>
+    </main>
+
+    <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>
+  </div>
   <script type="module" src="./popup.js"></script>
 </body>
 </html>

@@ -73,16 +73,31 @@ export const MODE_UI_META = Object.freeze({
     label: '自动捕获 + 统计',
     badgeText: 'AUTO',
     badgeColor: '#fb7299',
+    iconPaths: Object.freeze({
+      16: 'assets/icons/icon-16.png',
+      48: 'assets/icons/icon-48.png',
+      128: 'assets/icons/icon-128.png',
+    }),
   }),
   [WORK_MODE.STATS_ONLY]: Object.freeze({
     label: '仅听歌统计',
     badgeText: 'STAT',
     badgeColor: '#2ea043',
+    iconPaths: Object.freeze({
+      16: 'assets/icons/icon-stats-16.png',
+      48: 'assets/icons/icon-stats-48.png',
+      128: 'assets/icons/icon-stats-128.png',
+    }),
   }),
   [WORK_MODE.PAUSED]: Object.freeze({
     label: '暂停待机',
     badgeText: 'OFF',
     badgeColor: '#6e7681',
+    iconPaths: Object.freeze({
+      16: 'assets/icons/icon-paused-16.png',
+      48: 'assets/icons/icon-paused-48.png',
+      128: 'assets/icons/icon-paused-128.png',
+    }),
   }),
 });
 
