@@ -4,6 +4,16 @@
 
 ---
 
+### [2026-11-13] - 完成 Phase 2 双世界探针与 Service Worker 听歌统计 MVP
+- **所属模块**：Content 双世界探针与 Background 后台 (`src/content/probe-main.js`, `src/content/bridge-isolated.js`, `src/background/service-worker.js`, `tests/phase2.test.mjs`)
+- **核心变更**：
+  1. 实现 `probe-main.js`：`document_start` 无损劫持 `fetch`/`XHR`，建立 `cacheByCid`、`viewByBvid` 与 `activePlayerCidByBvid` 三表隔离缓存以兼顾首屏 `__playinfo__`、推荐预加载隔离与 SPA 切 P/切歌；同步内置页面侧 `fetchDashBlob`（`backupUrl` 容灾 + `audio/x-m4a` MIME 修正）与 `revokeBlobUrl`。
+  2. 实现 `bridge-isolated.js`：以 `1s` 挂钟采样（单步上限 `2.5s`）统计 `<video>`/`<bwp-video>` 真实播放时长，支持切歌/`pause`/`ended`/`pagehide` 刷盘、异步中转 `FETCH_DASH_BLOB` 及 `Extension context invalidated` 安全自停。
+  3. 实现 `service-worker.js`：打通 `TRACK_DETECTED`、`PLAY_HEARTBEAT`、`GET_POPUP_STATE`、`SET_WORK_MODE`、`UPDATE_SETTINGS`、`GET_LEADERBOARD`、`CLEAR_STATS` 路由；使用 `withTabQueue` + `withSessionLock` 杜绝并发心跳重复计数，并支持三态角标同步与标签页关闭清理。
+  4. 新增 `tests/phase2.test.mjs` 沙箱与集成测试（捕获并顺手修复了 `DOMContentLoaded` 时首屏 `__playinfo__` 尚未等待 250ms 轮询即触发快照的竞态）。
+- **原因与机理**：先跑通零音频下载风险的“探针识别 + 防串曲 + 真实听歌计时 + IndexedDB 统计”闭环，再于 Phase 3 挂接预检去重与落盘下载。
+- **后续注意事项**：进入 Phase 3（`preflight.js` 与 `downloader.js` 实现，并挂接至 `service-worker.js` 心跳阈值与手动下载入口）。
+
 ### [2026-11-13] - 完成 Phase 1 公共基础层 (`src/common/`) 与单元测试
 - **所属模块**：Common 公共层与测试 (`src/common/constants.js`, `messaging.js`, `sanitizer.js`, `db.js`, `tests/common.test.mjs`)
 - **核心变更**：
