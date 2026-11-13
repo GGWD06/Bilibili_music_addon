@@ -23,7 +23,7 @@
   - `tabStates`：按 `tabId` 存放活动标签页的当前曲目元数据、当前 `cid` 音轨列表、最高 DASH 音质代号及下载状态（`DOWNLOAD_STATUS`）。
   - `pendingDownloads`：按 `downloadId` 存放进行中的下载上下文，保证 SW 休眠唤醒后可完成落盘入库、旧文件清理与 `Blob URL` 释放。
 - **`chrome.storage.local`**（键 `settings`，跨浏览器重启持久）：
-  - 默认值 `DEFAULT_SETTINGS`：`{ mode: 'AUTO_CAPTURE', autoCaptureThresholdSeconds: 15, enableQualityUpgrade: true, archiveSubfolder: 'BiliMusic', groupMultiPartInSubdir: true, audioMimeType: 'audio/x-m4a' }`。
+  - 默认值 `DEFAULT_SETTINGS`：`{ mode: 'STATS_ONLY', autoCaptureThresholdSeconds: 15, enableQualityUpgrade: true, archiveSubfolder: 'BiliMusic', groupMultiPartInSubdir: true, audioMimeType: 'audio/x-m4a' }`（默认开启“仅听歌统计 + 按需手动下载”，防止日常看普通视频误触发自动下载）。
 
 ---
 

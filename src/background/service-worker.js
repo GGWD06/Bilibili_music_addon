@@ -62,9 +62,9 @@ async function saveSettings(nextSettings) {
   return nextSettings;
 }
 
-/** 同步扩展栏三态角标与扩展图标（红 AUTO / 绿 STAT / 灰 OFF） */
+/** 同步扩展栏三态角标与扩展图标（绿 STAT 默认 / 红 AUTO / 灰 OFF） */
 export async function syncActionBadge(mode) {
-  const meta = MODE_UI_META[mode] || MODE_UI_META[WORK_MODE.AUTO_CAPTURE];
+  const meta = MODE_UI_META[mode] || MODE_UI_META[WORK_MODE.STATS_ONLY];
   try {
     if (meta.iconPaths && chrome.action?.setIcon) {
       await chrome.action.setIcon({ path: meta.iconPaths });

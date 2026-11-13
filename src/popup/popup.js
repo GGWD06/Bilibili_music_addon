@@ -102,8 +102,8 @@ function renderCoverImage(imgEl, fallbackEl, rawUrl) {
 }
 
 function renderModeControls() {
-  const mode = state.settings?.mode || WORK_MODE.AUTO_CAPTURE;
-  const meta = MODE_UI_META[mode] || MODE_UI_META[WORK_MODE.AUTO_CAPTURE];
+  const mode = state.settings?.mode || WORK_MODE.STATS_ONLY;
+  const meta = MODE_UI_META[mode] || MODE_UI_META[WORK_MODE.STATS_ONLY];
 
   if (els.brandIcon && meta.iconPaths?.[48]) {
     els.brandIcon.src = `../../${meta.iconPaths[48]}`;

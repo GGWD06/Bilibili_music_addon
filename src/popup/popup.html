@@ -11,18 +11,18 @@
     <header class="topbar">
       <div class="brand-row">
         <div class="brand-left">
-          <img id="brand-icon" class="brand-icon" src="../../assets/icons/icon-48.png" alt="BiliMusic" />
+          <img id="brand-icon" class="brand-icon" src="../../assets/icons/icon-stats-48.png" alt="BiliMusic" />
           <div class="brand-titles">
             <span class="brand-name">BiliMusic</span>
             <span class="brand-sub">B站原流捕获 · 听歌统计</span>
           </div>
         </div>
-        <span id="mode-pill" class="mode-pill mode-auto">AUTO</span>
+        <span id="mode-pill" class="mode-pill mode-stat">STAT</span>
       </div>
 
       <div class="mode-switch" role="group" aria-label="工作模式切换">
-        <button type="button" class="mode-btn" data-mode="AUTO_CAPTURE">自动捕获</button>
         <button type="button" class="mode-btn" data-mode="STATS_ONLY">纯统计</button>
+        <button type="button" class="mode-btn" data-mode="AUTO_CAPTURE">自动捕获</button>
         <button type="button" class="mode-btn" data-mode="PAUSED">暂停</button>
       </div>
 
@@ -38,7 +38,7 @@
         <div id="empty-track-state" class="card empty-card">
           <div class="empty-badge">♫</div>
           <p class="empty-title">暂未捕获到 B 站播放曲目</p>
-          <p class="empty-desc">打开任意 B 站视频页并开始播放，扩展将自动识别无损/高音质 DASH 原流（若刚安装或重载扩展，请刷新该 B 站标签页）。</p>
+          <p class="empty-desc">打开任意 B 站视频页并开始播放，扩展将统计真实听歌时长并识别无损/高音质音轨，可随时一键手动下载（若刚安装或重载扩展，请刷新该 B 站标签页）。</p>
         </div>
 
         <div id="track-card" class="card track-card is-hidden">
@@ -65,7 +65,7 @@
 
           <div class="progress-block">
             <div class="progress-head">
-              <span class="progress-label">本次播放计数阈值</span>
+              <span class="progress-label">有效播放计数阈值</span>
               <span id="threshold-text" class="progress-value mono">0 / 15s</span>
             </div>
             <div class="progress-track">
@@ -91,7 +91,7 @@
           </div>
           <div class="settings-grid">
             <label class="field-box" for="setting-threshold">
-              <span class="field-label">捕获阈值 (秒)</span>
+              <span class="field-label">有效/捕获阈值 (秒)</span>
               <input id="setting-threshold" type="number" min="3" max="300" step="1" class="field-input mono" />
             </label>
             <label class="field-box" for="setting-subfolder">

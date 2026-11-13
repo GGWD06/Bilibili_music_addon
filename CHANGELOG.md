@@ -4,6 +4,15 @@
 
 ---
 
+### [2026-11-13] - 调整默认工作模式为 `STATS_ONLY`（防普通视频误触发自动下载）
+- **所属模块**：默认配置、图标预设、Popup 与测试 (`src/common/constants.js`, `manifest.json`, `src/background/service-worker.js`, `src/popup/popup.{html,js}`, `tests/phase3.test.mjs`)
+- **核心变更**：
+  1. 将 `DEFAULT_SETTINGS.mode` 从 `WORK_MODE.AUTO_CAPTURE` 改为 `WORK_MODE.STATS_ONLY`（`syncActionBadge` 与 `popup.js` 兜底默认亦同步切换为 `STATS_ONLY`）。
+  2. 为 `manifest.json` 的 `action.default_icon` 配置默认绿色统计图标 `icon-stats-{16,48,128}.png`，并将 Popup 顶部开关顺序调整为「纯统计」置首（同步更新默认胶囊 `STAT`、阈值说明与引导提示文案）。
+  3. 保留「自动捕获」作为可选工作模式开关，供专注听歌合集批量收歌时手动开启；日常播放视频仅统计听歌时长，需在 Popup 点击「立即下载原流 (.m4a)」才触发落盘。
+- **原因与机理**：用户反馈 B 站日常也会浏览大量非音乐视频，若默认开箱即自动捕获会导致误下载；方案 A 既避免日常误下，又保留批量自动收歌能力。
+- **后续注意事项**：若此前已加载扩展并手动切换保存在本地过模式，在 Popup 顶部切换回「纯统计」即可永久生效。
+
 ### [2026-11-13] - 完成 Phase 3~4 预检落盘调度、三态扩展图标与双 Tab Popup 控制台
 - **所属模块**：Background 下载管线、图标资源与 Popup 控台 (`src/common/constants.js`, `src/background/preflight.js`, `downloader.js`, `service-worker.js`, `src/popup/popup.{html,css,js}`, `assets/icons/*`, `tests/phase3.test.mjs`, `tests/phase4.test.mjs`)
 - **核心变更**：

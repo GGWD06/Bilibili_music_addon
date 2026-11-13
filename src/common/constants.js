@@ -57,9 +57,9 @@ export const STORAGE_KEYS = Object.freeze({
   PENDING_DOWNLOADS: 'pendingDownloads',
 });
 
-/** 用户默认持久化偏好设置 */
+/** 用户默认持久化偏好设置（默认仅统计，避免刷普通视频时误触发自动下载） */
 export const DEFAULT_SETTINGS = Object.freeze({
-  mode: WORK_MODE.AUTO_CAPTURE,
+  mode: WORK_MODE.STATS_ONLY,
   autoCaptureThresholdSeconds: 15,
   enableQualityUpgrade: true,
   archiveSubfolder: 'BiliMusic',

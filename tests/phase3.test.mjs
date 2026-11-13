@@ -346,6 +346,10 @@ test('service-worker: end-to-end auto capture at threshold, manual capture in ST
   const sw = await import('../src/background/service-worker.js');
   const { getTrack } = await import('../src/common/db.js');
 
+  // 0) 校验默认开箱模式为 STATS_ONLY（不自动下载）
+  const initialSettings = await sw.getSettings();
+  assert.equal(initialSettings.mode, WORK_MODE.STATS_ONLY, 'Default mode must be STATS_ONLY to prevent unwanted auto-downloads');
+
   // 1) 三态切换校验 iconPaths 与角标
   await sw.handleSetWorkMode({ mode: WORK_MODE.STATS_ONLY });
   assert.deepEqual(iconCalls.at(-1).path, MODE_UI_META[WORK_MODE.STATS_ONLY].iconPaths);
