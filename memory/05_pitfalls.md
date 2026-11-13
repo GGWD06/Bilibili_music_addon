@@ -1,6 +1,6 @@
 # ⚠️ BiliMusic - 历史关键决策与开发“避坑”指南 (05_pitfalls.md)
 
-本文档系统归档 `BiliMusic` 在架构选型（DASH 原流 vs `tabCapture`）、Chrome MV3 模块边界、B 站探针注入与跨平台文件落盘过程中沉淀的黄金避坑法则。**在开发、重构或排错前必须查阅本指南。**
+本文档系统归档 `BiliMusic` 在架构选型、Chrome 157 实测验证、MV3 模块边界、B 站探针防串曲与文件落盘过程中沉淀的黄金避坑法则。**在开发、重构或排错前必须查阅本指南。**
 
 ---
 
@@ -8,54 +8,60 @@
 
 | 领域代号 | 领域主题 | 规则数 | 关注痛点与技术边界 | 直达索引 |
 | :---: | :--- | :---: | :--- | :---: |
-| **MV3_ARCH** | ⚙️ 1. Chrome MV3 架构、模块边界与生命周期 | **3** | Content Script ESM 限制、SW 休眠丢失、SW 无 `URL.createObjectURL` | [查阅分类 ➔](#mv3_arch) |
-| **BILI_PROBE** | 🕵️ 2. Bilibili 页面探针、时序竞态与 DASH 流 | **3** | `document_start` 抢先劫持、`__INITIAL_STATE__` 判空、首屏 SSR 内联 `__playinfo__` | [查阅分类 ➔](#bili_probe) |
-| **DASH_FILE** | 📥 3. DASH 防盗链拉流、内存回收与文件落盘 | **3** | CDN 403 防盗链与 `backupUrl` 容灾、`Blob URL` 内存泄漏、Windows 非法字符清洗 | [查阅分类 ➔](#dash_file) |
+| **MV3_ARCH** | ⚙️ 1. Chrome MV3 架构、模块边界与生命周期 | **3** | Content Script ESM 限制、SW 休眠丢失、扩展重载后上下文失效 | [查阅分类 ➔](#mv3_arch) |
+| **BILI_PROBE** | 🕵️ 2. Bilibili 页面探针、时序竞态与防串曲 | **3** | `document_start` 无损劫持、首屏 `__playinfo__`、后台推荐预加载串曲 | [查阅分类 ➔](#bili_probe) |
+| **DASH_FILE** | 📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 | **4** | `bilivideo.com` 403 与 DNR 失效、`video/mp4` 改写后缀、`onDeterminingFilename` 冲突、`Blob` 释放 | [查阅分类 ➔](#dash_file) |
 
 ---
 
 ## <a id="mv3_arch"></a>⚙️ 1. Chrome MV3 架构、模块边界与生命周期 (3 项)
 
 ### <a id="pitfall-1"></a>#1 Content Script 严禁使用 ES Module `import`/`export` 语法
-- **问题根源**：虽然 `service-worker.js` 和 `popup.html` 支持 `"type": "module"`，但 Chrome `manifest.json` 的 `content_scripts` 默认以经典脚本注入，直接使用 `import` 会直接抛出 `SyntaxError: Cannot use import statement outside a module`，导致探针完全失效。
+- **问题根源**：虽然 `service-worker.js` 和 `popup.html` 支持 `"type": "module"`，但 Chrome `manifest.json` 的 `content_scripts` 默认以经典脚本注入，直接使用 `import` 会抛出 `SyntaxError: Cannot use import statement outside a module`。
 - **避坑铁律**：`src/content/probe-main.js` 与 `src/content/bridge-isolated.js` 必须保持**零外部依赖的独立单文件**（IIFE 封装），严禁引用 `src/common/` 中的 ESM 模块。
 
 ### <a id="pitfall-2"></a>#2 Service Worker 休眠导致内存状态与下载映射丢失
 - **问题根源**：MV3 Service Worker 空闲约 30 秒后会被终止进程，所有模块顶层的内存变量（如当前曲目快照、进行中的 `downloadId` 关联信息）会全部清零。
-- **避坑铁律**：活动标签页曲目快照与进行中的下载映射必须同步持久化到 `chrome.storage.session`（配合 `chrome.storage.local` 存用户配置），SW 唤醒入口必须优先从 `storage.session` 恢复状态。
+- **避坑铁律**：活动标签页曲目快照（`tabStates`）与进行中的下载映射（`pendingDownloads`）必须同步持久化到 `chrome.storage.session`，SW 唤醒时优先从 `storage.session` 恢复状态。
 
-### <a id="pitfall-3"></a>#3 MV3 Service Worker 中不存在 `URL.createObjectURL`
-- **问题根源**：`ServiceWorkerGlobalScope` 原生不支持 `URL.createObjectURL(blob)`。若在 SW 中 `fetch` 音频流转 `Blob`，将无法生成可供 `chrome.downloads.download` 使用的本地 URL（若转 Data URL 则几兆到几十兆的音频会直接撑爆内存或触发 URL 长度限制）。
-- **避坑铁律**：DASH 音频流的 `fetch` 与 `URL.createObjectURL(blob)` 统一放在页面 `probe-main.js` 中执行（天然具备 DOM `URL` API 与原站 `Referer`），生成 `blob:https://www.bilibili.com/...` 后传给 SW 调用 `chrome.downloads.download` 落盘。
-
----
-
-## <a id="bili_probe"></a>🕵️ 2. Bilibili 页面探针、时序竞态与 DASH 流 (3 项)
-
-### <a id="pitfall-4"></a>#4 `probe-main.js` 必须在 `document_start` 注入且安全等待 `window.__INITIAL_STATE__`
-- **问题根源**：B 站首屏初始化极快，若探针在 `document_idle` 才注入会错过首屏网络请求；但 `document_start` 阶段 DOM 尚未解析，`window.__INITIAL_STATE__` 尚未挂载。
-- **避坑铁律**：`manifest.json` 强制 `probe-main.js` 为 `run_at: "document_start"` 以第一时间劫持 `fetch` / `XHR`；读取 `window.__INITIAL_STATE__` 时必须搭配 `DOMContentLoaded` 监听或轮询兜底，严禁直接解构读取。
-
-### <a id="pitfall-5"></a>#5 首屏直出 `window.__playinfo__` 导致不发 `playurl` XHR/Fetch 请求
-- **问题根源**：用户直接打开或刷新 B 站视频页时，首屏首个视频的 DASH 流信息往往由服务端 SSR 直接内联在 HTML 的 `window.__playinfo__` 全局变量中，播放器**不会**再次发起 `/x/player/wbi/playurl` 网络请求（只有切 P、换音质或 SPA 跳转时才发请求）。如果只劫持 `fetch`/`XHR`，首屏第一首歌永远抓不到流！
-- **避坑铁律**：`probe-main.js` 必须**双管齐下**——既要在 `DOMContentLoaded` 时主动读取 `window.__playinfo__` 提取首屏 DASH 音频流，又要劫持 `fetch`/`XHR` 捕获后续切 P、切歌与切换音质时的动态 `playurl` 响应。
-
-### <a id="pitfall-6"></a>#6 为什么放弃 `tabCapture` 录音而改用 DASH 原流直下
-- **问题根源**：`tabCapture` + `MediaRecorder` 输出的是有损重编码的 WebM/Opus，不仅使 Hi-Res/FLAC 音质升级失去意义，还会受倍速播放、拖进度条、缓冲卡顿和首次点击手势限制困扰。
-- **避坑铁律**：锁定 DASH 原流提取方案，对极少数仅有旧版 `durl`（无分离 `dash.audio`）的远古视频做优雅降级（仅统计不下载）。
+### <a id="pitfall-3"></a>#3 扩展重新加载后旧标签页触发 `Extension context invalidated`
+- **问题根源**：在 `chrome://extensions` 重新加载扩展或扩展更新后，已打开的 B 站标签页中残留的旧 `bridge-isolated.js` 调用 `chrome.runtime.sendMessage` 会抛出 `Error: Extension context invalidated.`。
+- **避坑铁律**：`bridge-isolated.js` 中所有 `chrome.runtime.*` 调用与定时器必须检查 `chrome.runtime?.id` 并捕获该异常；一旦检测到上下文失效，立即停止旧脚本的心跳定时器，避免控制台持续报错刷屏。
 
 ---
 
-## <a id="dash_file"></a>📥 3. DASH 防盗链拉流、内存回收与文件落盘 (3 项)
+## <a id="bili_probe"></a>🕵️ 2. Bilibili 页面探针、时序竞态与防串曲 (3 项)
 
-### <a id="pitfall-7"></a>#7 B 站 CDN 防盗链 403 与 PCDN/MCDN 节点失效
-- **问题根源**：直接将 `*.bilivideo.com` 流地址传给 `chrome.downloads.download` 会因缺少 `Referer: https://www.bilibili.com/` 返回 403 Forbidden；此外 `baseUrl` 经常指向不稳定的 PCDN/MCDN 节点。
-- **避坑铁律**：在 `probe-main.js`（B 站页面上下文）中发起 `fetch`，浏览器自动携带合法 `Referer` 与 `Origin`；当 `baseUrl` 请求失败时自动遍历 `backupUrl` 数组重试。
+### <a id="pitfall-4"></a>#4 `probe-main.js` 必须在 `document_start` 无损注入且校验 `__INITIAL_STATE__` 同步状态
+- **问题根源**：B 站首屏初始化极快，晚注入会错过早期请求；同时在 SPA 切歌时，`location.pathname` 立即改变而 `window.__INITIAL_STATE__.videoData` 会滞后数百毫秒更新。
+- **避坑铁律**：`probe-main.js` 锁定 `run_at: "document_start"`；劫持 `fetch`/`XHR` 必须先 `clone()` 且全包裹 `try/catch`；读取 `window.__INITIAL_STATE__` 时必须校验 URL 中的 `bvid` 与 `videoData.bvid` 是否一致，并在路由变化后做延迟二次同步。
 
-### <a id="pitfall-8"></a>#8 页面侧 `Blob URL` 落盘后必须及时 `revokeObjectURL`
-- **问题根源**：每首歌曲的 `Blob` 占 3MB~30MB 内存，若调用 `URL.createObjectURL` 后不释放，连续听歌几小时会导致 B 站标签页内存暴涨甚至崩溃。
-- **避坑铁律**：`downloader.js` 监听 `chrome.downloads.onChanged`，一旦状态变为 `complete` 或 `interrupted`，立即通知对应标签页调用 `URL.revokeObjectURL(blobUrl)` 释放内存。
+### <a id="pitfall-5"></a>#5 首屏 SSR `window.__playinfo__` 不发请求 & 后台预加载触发严重串曲（实测大坑）
+- **问题根源**：
+  1. 首屏打开视频时，DASH 流内联在 `window.__playinfo__` 中，不发 `playurl` 网络请求；
+  2. **更隐蔽的串曲陷阱（Spike 实测捕获）**：用户在看视频 A（如 41 分钟歌单 `cid=43240392504`）时，B 站页面后台会静默发起多达 5 个其他推荐视频（如 5 分钟视频 `cid=1128442355`）的 `/x/player/wbi/playurl` XHR 请求。若用单变量保存最新 `playinfo`，会把 5 分钟推荐视频的音频冠以 41 分钟当前视频的标题存盘！
+- **避坑铁律**：必须使用 `cacheByCid`（`Map<cid, PlayinfoEntry>`）按请求 URL 中的 `cid` 隔离缓存所有 `playurl` 响应，首屏 `window.__playinfo__` 仅绑定初始 `cid`；消费音轨时只允许读取 `cacheByCid.get(currentCid)`。
 
-### <a id="pitfall-9"></a>#9 Windows 非法文件名字符、尾随点号与保留字导致 `chrome.downloads` 崩溃
-- **问题根源**：B 站视频标题常包含 `: / \ * ? " < > |`、控制符或以 `.` 结尾，直接拼接传给 `chrome.downloads.download` 的 `filename` 会触发 `Invalid filename` 失败。
-- **避坑铁律**：所有归档路径与文件名必须经由 `src/common/sanitizer.js` 三级清洗流水线处理，且在 `downloader.js` 中保留降级保底命名重试策略。
+### <a id="pitfall-6"></a>#6 B 站 DASH 音轨容器格式真相：Hi-Res FLAC 实际封装在 fMP4 容器内
+- **问题根源**：B 站 DASH 的 `30251`（Hi-Res FLAC）与 `30250`（杜比 E-AC-3）并非裸 `.flac` 文件，而是以 `ftyp` 开头的 **fMP4（Fragmented MP4）** 容器封装。若直接将文件后缀存为 `.flac`，部分严格校验文件头 `fLaC` 魔数的播放器会报错无法打开。
+- **避坑铁律**：所有 DASH 音频流落盘扩展名统一使用 **`.m4a`**，并在曲库元数据与 UI 徽章中清晰标注其真实内部编码（`Hi-Res FLAC` / `Dolby Atmos` / `192K AAC`）。
+
+---
+
+## <a id="dash_file"></a>📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 (4 项)
+
+### <a id="pitfall-7"></a>#7 `bilivideo.com` 源站 403 `SERVER_FORBIDDEN`（DNR 补 `Referer` 对 `chrome.downloads` 失效）
+- **问题根源**：经 Chrome 157 实测，当 CDN 节点为 `upos-sz-mirrorcosov.bilivideo.com` 时，在 SW 中直接调用 `chrome.downloads.download(url)`——**即使配置了 `declarativeNetRequest` 动态注入 `Referer` 与 `Origin` 头**——依然会触发 `SERVER_FORBIDDEN`（仅落盘 548 字节的 403 HTML）；而同一时刻页面上下文 `probe-main.js` 的 `fetch(url)` 则直接返回 `HTTP 206` 正常流。此外，SW 中无 `URL.createObjectURL`。
+- **避坑铁律**：彻底弃用 SW 直链下载与 DNR 方案；锁定由 `probe-main.js` 在页面上下文执行 `fetch`（主 `baseUrl` 失败自动切换 `backupUrl`）生成 `Blob URL` 后移交 SW `chrome.downloads.download` 落盘。
+
+### <a id="pitfall-8"></a>#8 CDN 返回 `Content-Type: video/mp4` 导致 Chrome 自动将 `.m4a` 后缀改写为 `.mp4`
+- **问题根源**：B 站 CDN 对纯音轨流返回的响应头也是 `Content-Type: video/mp4`。若页面 `fetch` 后直接用 `res.blob()` 生成 `Blob URL`，`blob.type` 会继承 `video/mp4`，导致 `chrome.downloads.download({ filename: 'xxx.m4a' })` 在 Windows 上被 Chrome 自动改写为 `xxx.mp4`，影响部分只扫描 `.m4a` 的音乐播放器。
+- **避坑铁律**：在 `probe-main.js` 生成 `Blob` 时，使用 `new Blob([rawBlob], { type: 'audio/x-m4a' })` 将 MIME 显式修正为音频类型，避免被 Chrome 强制改为 `.mp4`。
+
+### <a id="pitfall-9"></a>#9 `chrome.downloads.onDeterminingFilename` 全局钩子覆盖子目录陷阱
+- **问题根源**：只要扩展在 SW 中注册了 `chrome.downloads.onDeterminingFilename` 监听器，并对某次下载调用了无参 `suggest()`，Chrome 就会直接丢弃 `chrome.downloads.download({ filename: 'BiliMusic/...' })` 中传入的子目录与自定义文件名，退回默认根目录文件名（Blob 下载退回 UUID 文件名）。
+- **避坑铁律**：本扩展严禁注册无差别调用空 `suggest()` 的 `onDeterminingFilename` 监听器；直接使用 `chrome.downloads.download({ filename })` 即可使 `BiliMusic/` 子目录原生生效。
+
+### <a id="pitfall-10"></a>#10 页面侧 `Blob URL` 落盘后必须及时 `revokeObjectURL`
+- **问题根源**：每首歌曲的 `Blob` 占 3MB~60MB 内存，若调用 `URL.createObjectURL` 后不释放，连续听歌会导致 B 站标签页内存持续上涨。
+- **避坑铁律**：`downloader.js` 监听 `chrome.downloads.onChanged`，一旦状态变为 `complete` 或 `interrupted`，立即通知对应标签页调用 `URL.revokeObjectURL(blobUrl)` 释放内存，同时在页面侧设置 10 分钟保底自动释放定时器。
