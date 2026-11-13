@@ -31,6 +31,7 @@ const state = {
   settings: { ...DEFAULT_SETTINGS },
   tabState: null,
   dbTrack: null,
+  playerSyncState: null,
   lbDays: 0,
   lbSortBy: 'totalPlayedSeconds',
   clearConfirmTimer: null,
@@ -155,6 +156,21 @@ function renderQualityBadge(tabState) {
   }
 }
 
+function renderPlayerSyncStatus() {
+  if (!els.playerSyncDot || !els.playerSyncText) return;
+  const sync = state.playerSyncState;
+  const isOnline = Boolean(sync && sync.online);
+  els.playerSyncDot.classList.toggle('is-online', isOnline);
+  if (sync?.disabled) {
+    els.playerSyncText.textContent = '桌面播放器联动已关闭';
+  } else if (isOnline) {
+    const count = sync.playerSummary?.totalTracks;
+    els.playerSyncText.textContent = count != null ? `桌面播放器已联机 (${count} 首)` : '桌面播放器已联机';
+  } else {
+    els.playerSyncText.textContent = '桌面播放器未连接';
+  }
+}
+
 function renderLiveTrack() {
   const tab = state.tabState;
   if (!tab || !tab.meta || !tab.meta.bvid) {
@@ -207,8 +223,11 @@ function renderLiveTrack() {
 
   const stats = tab.trackStats || {};
   const playCount = Number(stats.playCount ?? state.dbTrack?.playCount ?? 0);
+  const biliCount = Number(stats.biliPlayCount ?? state.dbTrack?.biliPlayCount ?? playCount);
+  const playerCount = Number(stats.playerPlayCount ?? state.dbTrack?.playerPlayCount ?? 0);
   const totalSec = Number(stats.totalPlayedSeconds ?? state.dbTrack?.totalPlayedSeconds ?? 0);
-  els.trackStatsLine.textContent = `累计有效播放 ${playCount} 次 · 累计听歌 ${formatDurationClock(totalSec)}`;
+  const breakdown = playerCount > 0 ? ` (网页 ${biliCount} · 播放器 ${playerCount})` : '';
+  els.trackStatsLine.textContent = `累计有效播放 ${playCount} 次${breakdown} · 累计听歌 ${formatDurationClock(totalSec)}`;
 
   const filename = stats.filename || state.dbTrack?.filename || '';
   if (filename) {
@@ -335,7 +354,12 @@ function renderLeaderboard(payload) {
     metrics.className = 'lb-metrics';
     const playsEl = document.createElement('div');
     playsEl.className = 'lb-plays mono';
+    const playerCnt = Number(item.playerPlayCount) || 0;
     playsEl.textContent = `${item.playCount || 0} 次`;
+    if (playerCnt > 0) {
+      const biliCnt = Number(item.biliPlayCount ?? ((item.playCount || 0) - playerCnt));
+      playsEl.title = `B站网页 ${biliCnt} 次 + 桌面播放器 ${playerCnt} 次`;
+    }
     const durEl = document.createElement('div');
     durEl.className = 'lb-dur mono';
     durEl.textContent = formatDurationHuman(item.totalPlayedSeconds || 0);
@@ -359,10 +383,23 @@ async function refreshPopupState() {
   state.tabId = payload.tabId ?? null;
   state.tabState = payload.tabState ?? null;
   state.dbTrack = payload.dbTrack ?? null;
+  if (payload.playerSyncState !== undefined) {
+    state.playerSyncState = payload.playerSyncState;
+  }
 
   renderModeControls();
   renderSettingsForm();
+  renderPlayerSyncStatus();
   renderLiveTrack();
+}
+
+async function refreshPlayerSyncStatus() {
+  const res = await sendToBackground(ACTION.GET_PLAYER_SYNC_STATUS, {});
+  const syncState = res?.syncState || res?.data?.syncState;
+  if (syncState) {
+    state.playerSyncState = syncState;
+    renderPlayerSyncStatus();
+  }
 }
 
 async function refreshLeaderboard() {
@@ -453,6 +490,26 @@ function bindEvents() {
     await refreshPopupState();
   });
 
+  // 立即与桌面播放器双向同步
+  els.btnSyncPlayer.addEventListener('click', async () => {
+    els.btnSyncPlayer.disabled = true;
+    const res = await sendToBackground(ACTION.SYNC_PLAYER_NOW, {});
+    els.btnSyncPlayer.disabled = false;
+    if (res?.ok) {
+      state.playerSyncState = res.syncState || { online: true, lastSyncAt: Date.now(), playerSummary: res.summary };
+      renderPlayerSyncStatus();
+      showToast('已与桌面播放器完成双向同步', 'success');
+      await refreshPopupState();
+      if (state.activeTab === 'leaderboard') {
+        await refreshLeaderboard();
+      }
+    } else {
+      state.playerSyncState = { ...(state.playerSyncState || {}), online: false };
+      renderPlayerSyncStatus();
+      showToast(res?.error || '未检测到桌面播放器运行', 'error');
+    }
+  });
+
   // 实时参数设置
   els.settingThreshold.addEventListener('change', () => {
     const val = Math.min(300, Math.max(3, Math.round(Number(els.settingThreshold.value) || 15)));
@@ -531,6 +588,10 @@ function bindEvents() {
         renderModeControls();
         renderSettingsForm();
       }
+      if (p.playerSyncState) {
+        state.playerSyncState = p.playerSyncState;
+        renderPlayerSyncStatus();
+      }
       if (p.tabId != null && (state.tabId == null || p.tabId === state.tabId) && p.tabState) {
         state.tabId = p.tabId;
         state.tabState = p.tabState;
@@ -577,6 +638,9 @@ function init() {
   els.trackFilenameLine = $('track-filename-line');
   els.downloadErrorBox = $('download-error-box');
   els.btnManualDownload = $('btn-manual-download');
+  els.playerSyncDot = $('player-sync-dot');
+  els.playerSyncText = $('player-sync-text');
+  els.btnSyncPlayer = $('btn-sync-player');
 
   els.settingThreshold = $('setting-threshold');
   els.settingSubfolder = $('setting-subfolder');
@@ -595,6 +659,7 @@ function init() {
 
   bindEvents();
   refreshPopupState();
+  refreshPlayerSyncStatus();
 }
 
 document.addEventListener('DOMContentLoaded', init);

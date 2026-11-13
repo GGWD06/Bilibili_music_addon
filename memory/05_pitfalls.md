@@ -10,7 +10,7 @@
 | :---: | :--- | :---: | :--- | :---: |
 | **MV3_ARCH** | ⚙️ 1. Chrome MV3 架构、模块边界与生命周期 | **3** | Content Script ESM 限制、SW 休眠丢失、扩展重载后上下文失效 | [查阅分类 ➔](#mv3_arch) |
 | **BILI_PROBE** | 🕵️ 2. Bilibili 页面探针、时序竞态与防串曲 | **3** | `document_start` 无损劫持、首屏 `__playinfo__`、后台推荐预加载串曲 | [查阅分类 ➔](#bili_probe) |
-| **DASH_FILE** | 📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 | **4** | `bilivideo.com` 403 与 DNR 失效、`video/mp4` 改写后缀、`onDeterminingFilename` 冲突、`Blob` 释放 | [查阅分类 ➔](#dash_file) |
+| **DASH_FILE** | 📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 | **6** | `bilivideo.com` 403 与 DNR 失效、`video/mp4` 改写后缀、`onDeterminingFilename` 冲突、`Blob` 释放、`.bat` UTF-8 吞行、下载目录重定向 | [查阅分类 ➔](#dash_file) |
 
 ---
 
@@ -48,7 +48,7 @@
 
 ---
 
-## <a id="dash_file"></a>📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 (4 项)
+## <a id="dash_file"></a>📥 3. DASH 防盗链拉流、MIME 后缀与文件落盘 (6 项)
 
 ### <a id="pitfall-7"></a>#7 `bilivideo.com` 源站 403 `SERVER_FORBIDDEN`（DNR 补 `Referer` 对 `chrome.downloads` 失效）
 - **问题根源**：经 Chrome 157 实测，当 CDN 节点为 `upos-sz-mirrorcosov.bilivideo.com` 时，在 SW 中直接调用 `chrome.downloads.download(url)`——**即使配置了 `declarativeNetRequest` 动态注入 `Referer` 与 `Origin` 头**——依然会触发 `SERVER_FORBIDDEN`（仅落盘 548 字节的 403 HTML）；而同一时刻页面上下文 `probe-main.js` 的 `fetch(url)` 则直接返回 `HTTP 206` 正常流。此外，SW 中无 `URL.createObjectURL`。
@@ -65,3 +65,11 @@
 ### <a id="pitfall-10"></a>#10 页面侧 `Blob URL` 落盘后必须及时 `revokeObjectURL`
 - **问题根源**：每首歌曲的 `Blob` 占 3MB~60MB 内存，若调用 `URL.createObjectURL` 后不释放，连续听歌会导致 B 站标签页内存持续上涨。
 - **避坑铁律**：`downloader.js` 监听 `chrome.downloads.onChanged`，一旦状态变为 `complete` 或 `interrupted`，立即通知对应标签页调用 `URL.revokeObjectURL(blobUrl)` 释放内存，同时在页面侧设置 10 分钟保底自动释放定时器。
+
+### <a id="pitfall-11"></a>#11 Windows `.bat` 批处理脚本严禁直接混写 UTF-8 中文（奇数汉字字节吞换行符）
+- **问题根源**：Windows `cmd.exe` 默认以 **GBK (CP936)** 双字节编码逐字节解析 `.bat` 文件。若 `.bat` 以 UTF-8 保存且包含奇数个汉字（3 字节/字），行尾残留的半个汉字字节会吞掉换行符及下一行命令开头，导致 `title ...` 乱码且 `cd /d`、`echo` 被截断报错。
+- **避坑铁律**：`start-player.bat` 等 Windows 批处理脚本必须全部使用**纯 ASCII 指令**（首行执行 `chcp 65001 >nul` 后将所有中文提示交由 `player/start.mjs` 等 Node.js 脚本输出）。
+
+### <a id="pitfall-12"></a>#12 Windows “下载”文件夹被重定向至非 `USERPROFILE\Downloads` 路径
+- **问题根源**：许多 Windows 用户会将“下载”系统目录迁移至其他盘符（如注册表 `User Shell Folders\{374DE290-123F-4565-9164-39C4925E467B}` 为 `D:`，Chrome 即落盘至 `D:\BiliMusic`），而 Node.js `path.join(os.homedir(), 'Downloads', 'BiliMusic')` 只指向 `C:\Users\<user>\Downloads\BiliMusic`，导致首次打开播放器显示 `0` 首歌曲；且当 `User Shell Folders` 返回裸盘符 `D:` 时，Node `path.resolve('D:')` 会受当前工作目录影响。
+- **避坑铁律**：`player/lib/scanner.mjs` 必须读取 Windows 注册表真实“下载”路径（裸盘符补全反斜杠 `\`）并检查各盘符根目录下存在的 `BiliMusic`；同时 `store.mjs` 在收到 Chrome 插件推送的 `filename` 时自动反推并纳管实际归档目录。

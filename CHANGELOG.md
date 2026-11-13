@@ -4,6 +4,39 @@
 
 ---
 
+### [2026-11-13] - 补齐开源仓库基础配置（`.gitignore` / `README.md`）并关联 GitHub 远程仓库
+- **所属模块**：工程配置与文档 (`README.md`, `.gitignore`, `CHANGELOG.md`)
+- **核心变更**：
+  1. 新增 `.gitignore`，忽略 `player/data/`（防止本机运行库 `library.json` 中的个人路径与本地听歌数据提交至远程仓库）、`*.tmp`、`node_modules/` 及常见系统缓存文件。
+  2. 新增根目录 `README.md`，汇总扩展与配套桌面播放器特性、目录结构、安装使用方式及测试命令。
+  3. 将本地主分支由 `master` 重命名为 `main`，关联远程仓库 `https://github.com/GGWD06/Bilibili_music_addon.git`。
+- **原因与机理**：规范开源仓库结构，隔离运行时个人本地数据并完成 GitHub 远程托管。
+
+### [2026-11-13] - 适配 Windows 下载目录重定向（自动发现 `D:\BiliMusic` 等真实下载目录）
+- **所属模块**：播放器目录扫描与数据同步 (`player/lib/scanner.mjs`, `player/lib/store.mjs`, `player/server.mjs`, `tests/player.test.mjs`, `memory/05_pitfalls.md`)
+- **核心变更**：
+  1. 在 `scanner.mjs` 新增 `detectWindowsDownloadsDir()`（读取 Windows 注册表 `User Shell Folders` 真实下载路径，并对裸盘符 `D:` 自动补全反斜杠）及 `extractArchiveRootFromFilename()`。
+  2. `getDefaultMusicDirs()` 自动探测真实下载目录下的 `BiliMusic` 及常见盘符下已存在的 `BiliMusic` 文件夹；`store.mjs` 启动加载时自动补齐并持久化这些已存在目录，同时在扩展同步来真实 `filename` 时自动纳管新归档根目录并刷新 `fs.watch` 监听。
+  3. 扩充 `tests/player.test.mjs` 校验 `extractArchiveRootFromFilename`，并在 `memory/05_pitfalls.md` 新增 `#12` 避坑指南。
+- **原因与机理**：用户系统的 Windows“下载”文件夹被重定向至 `D:\`（实际音频在 `D:\BiliMusic`），仅按 `os.homedir()/Downloads` 扫描会遗漏已下载曲目。
+
+### [2026-11-13] - 修复 `start-player.bat` UTF-8 汉字字节错位导致 `cmd.exe` 吞行报错
+- **所属模块**：桌面播放器启动脚本与避坑指南 (`start-player.bat`, `memory/05_pitfalls.md`)
+- **核心变更**：
+  1. 将 `start-player.bat` 改写为纯 ASCII 指令并前置 `chcp 65001 >nul`，彻底移除 `.bat` 内的中文字符串，由 `player/start.mjs` 输出中文日志。
+  2. 在 `memory/05_pitfalls.md` 新增 `#11` 避坑法则记录 Windows `.bat` 在 GBK 代码页下读取 UTF-8 奇数汉字吞换行符的机理。
+- **原因与机理**：UTF-8 编码的 9 个汉字（27 字节）在 `cmd.exe` 默认 GBK（CP936）下按双字节切分时末尾多出 1 字节，将 `\r\n` 与下一行 `cd /d` 前缀拼接吞掉，造成命令截断报错。
+
+### [2026-11-13] - 新增独立配套桌面音乐播放器 (`player/`) 与 Chrome 插件双向实时联动
+- **所属模块**：独立播放器子工程 (`player/`, `start-player.bat`)、扩展数据模型与联动同步 (`manifest.json`, `src/common/{constants,db}.js`, `src/background/{player-sync,service-worker}.js`, `src/popup/*`, `tests/player.test.mjs`)
+- **核心变更**：
+  1. 新建独立 Node.js 桌面音乐播放器软件 (`player/`)：包含 `scanner.mjs`（递归扫描 `Downloads/BiliMusic` 并智能反解析单 P/多 P/保底文件名）、`store.mjs`（歌单 CRUD、红心收藏、`local_*` 与 B 站 `bvid_cid` 平滑合并迁移及分端/汇总计数）、`server.mjs`（`127.0.0.1:19527` 本地服务、HTTP `206` Range 流式音频、`fs.watch` 目录监听、`/api/sync/{event,full}` 同步接口）及 `start.mjs` / `start-player.bat`（独立 `--app` 桌面窗口启动）。
+  2. 实现桌面播放器前端 (`player/public/`)：支持「全部音乐 / 我喜欢的音乐 / 自定义歌单 / 听歌排行榜」视图，提供 **4 种播放模式**（列表循环、单曲循环、当前列表随机播放、全部音乐随机播放，基于 Fisher-Yates 洗牌与历史回退栈）、顶部一键「列表随机」与「全部音乐随机」、真实 15s 播放阈值计数、倍速与队列抽屉。
+  3. 升级 Chrome 扩展侧实现双向联动：在 `manifest.json` 增加 `127.0.0.1`/`localhost` 权限，在 `db.js` 引入 `biliPlayCount`/`biliPlayedSeconds` 与 `playerPlayCount`/`playerPlayedSeconds` 分端明细与统一汇总（`playCount = biliPlayCount + playerPlayCount`），新增 `player-sync.js` 实现 SW 非阻塞实时推送，并在 Popup 增设联机状态指示、一键双向同步按钮与分端次数显示。
+  4. 新增 `tests/player.test.mjs` 5 项测试（覆盖目录扫描、歌单与跨端合并、HTTP 206 流式与 API 端到端、扩展双向同步集成、DOM ID 与无弹窗契约），全套 `node --test` 17/17 全部通过。
+- **原因与机理**：满足用户在脱离浏览器时使用独立桌面软件畅听已捕获无损音频、管理自定义歌单与随机播放的需求，同时保持两边听歌次数与曲目元数据的无缝统一汇总与分端溯源。
+- **后续注意事项**：双击根目录 `start-player.bat`（或运行 `node player/start.mjs`）即可启动独立播放器窗口；若扩展刚更新，需在 `chrome://extensions/` 重新加载扩展。
+
 ### [2026-11-13] - 调整默认工作模式为 `STATS_ONLY`（防普通视频误触发自动下载）
 - **所属模块**：默认配置、图标预设、Popup 与测试 (`src/common/constants.js`, `manifest.json`, `src/background/service-worker.js`, `src/popup/popup.{html,js}`, `tests/phase3.test.mjs`)
 - **核心变更**：

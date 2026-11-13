@@ -46,3 +46,8 @@
   - 生成并绑定三态扩展栏图标（`AUTO` 粉 / `STAT` 绿 / `OFF` 灰，`16/48/128px` 抗锯齿 PNG 配合 `chrome.action.setIcon` 与 `MODE_UI_META.iconPaths`）
   - 完成 `360x520` 双 Tab Popup 控台（实时控台展示封面/分 P/真实音质徽章/归档状态/阈值进度/手动触发/参数实时保存；听歌榜展示 KPI 汇总/时间范围筛选/排序/两步内联确认清空），严禁使用阻塞弹窗与 CSP 违规内联脚本
   - 新增 `tests/phase4.test.mjs` 验证 DOM ID 契约、无阻塞弹窗规范与 UI 交互闭环
+- [x] **Phase 5：独立配套桌面音乐播放器 (`player/`) 与插件双向实时联动 (`tests/player.test.mjs`)**
+  - 实现 `player/lib/scanner.mjs`（递归扫描 `Downloads/BiliMusic` 及文件名智能反解析）与 `player/lib/store.mjs`（JSON 持久化、自定义歌单 CRUD、红心收藏、本地扫描匹配迁移与「B站网页 + 播放器软件」分端/汇总计数引擎）
+  - 实现 `player/server.mjs`（`127.0.0.1:19527` 本地 HTTP 服务、HTTP `206 Partial Content` Range 音频流、`fs.watch` 目录实时监听、`/api/sync/event` 与 `/api/sync/full` 联动接口）与 `player/start.mjs` + `start-player.bat` 独立窗口启动器
+  - 实现 `player/public/{index.html,player.css,player.js}` 桌面播放器界面（4 种播放模式：列表循环 / 单曲循环 / 列表随机 / 全部音乐随机、Fisher-Yates 洗牌队列与历史回退栈、自定义歌单、真实听歌计时与跨端排行榜）
+  - 升级扩展侧 `manifest.json`、`constants.js`、`db.js`、`player-sync.js`、`service-worker.js` 与 `popup/`，实现实时事件推送、Popup 一键双向同步与分端明细展示，并通过 `tests/player.test.mjs` 全部测试

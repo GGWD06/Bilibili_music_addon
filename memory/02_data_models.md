@@ -10,10 +10,12 @@
 
 | 对象仓库 (Store) | 主键 & 索引 | 核心字段定义 |
 | :--- | :--- | :--- |
-| `tracks` | 主键 `trackKey` (`${bvid}_${cid}`)<br>索引：`bvid`, `cid`, `lastPlayedAt`, `playCount`, `totalPlayedSeconds`, `downloadedAt` | `trackKey`, `bvid`, `cid`, `p`, `totalParts`, `title`, `part`, `owner`, `cover`, `playCount`, `totalPlayedSeconds`, `firstPlayedAt`, `lastPlayedAt`, `qualityId`, `codecs`, `downloadId`, `filename`, `downloadedAt` |
+| `tracks` | 主键 `trackKey` (`${bvid}_${cid}`)<br>索引：`bvid`, `cid`, `lastPlayedAt`, `playCount`, `totalPlayedSeconds`, `downloadedAt` | `trackKey`, `bvid`, `cid`, `p`, `totalParts`, `title`, `part`, `owner`, `cover`, `biliPlayCount`, `biliPlayedSeconds`, `playerPlayCount`, `playerPlayedSeconds`, `playCount`, `totalPlayedSeconds`, `firstPlayedAt`, `lastPlayedAt`, `qualityId`, `codecs`, `downloadId`, `filename`, `downloadedAt` |
 | `play_logs` | 主键 `id` (`autoIncrement: true`)<br>索引：`trackKey`, `timestamp`, `sessionId` | `id`, `trackKey`, `sessionId`（用于合并单次播放会话心跳）, `timestamp`, `duration`, `counted`（是否已达到有效播放计数阈值） |
 
-核心导出函数：`makeTrackKey`, `openDatabase`, `getTrack`, `upsertTrackMeta`, `recordPlayProgress`, `markTrackDownloaded`, `clearTrackDownload`, `sortLeaderboardItems`, `getLeaderboard`, `clearListeningStats`。
+核心导出函数：`makeTrackKey`, `openDatabase`, `getTrack`, `getAllTracks`, `upsertTrackMeta`, `recordPlayProgress`, `mergeTracksFromPlayer`, `markTrackDownloaded`, `clearTrackDownload`, `sortLeaderboardItems`, `getLeaderboard`, `clearListeningStats`。
+
+- **跨端汇总规则**：`playCount = biliPlayCount + playerPlayCount`，`totalPlayedSeconds = biliPlayedSeconds + playerPlayedSeconds`（同时保留网页端与桌面播放器端各自明细）。
 
 ---
 
@@ -22,8 +24,9 @@
 - **`chrome.storage.session`**（跨 SW 休眠持久）：
   - `tabStates`：按 `tabId` 存放活动标签页的当前曲目元数据、当前 `cid` 音轨列表、最高 DASH 音质代号及下载状态（`DOWNLOAD_STATUS`）。
   - `pendingDownloads`：按 `downloadId` 存放进行中的下载上下文，保证 SW 休眠唤醒后可完成落盘入库、旧文件清理与 `Blob URL` 释放。
+  - `playerSyncState`：缓存桌面播放器联机状态、上次同步时间与曲库汇总。
 - **`chrome.storage.local`**（键 `settings`，跨浏览器重启持久）：
-  - 默认值 `DEFAULT_SETTINGS`：`{ mode: 'STATS_ONLY', autoCaptureThresholdSeconds: 15, enableQualityUpgrade: true, archiveSubfolder: 'BiliMusic', groupMultiPartInSubdir: true, audioMimeType: 'audio/x-m4a' }`（默认开启“仅听歌统计 + 按需手动下载”，防止日常看普通视频误触发自动下载）。
+  - 默认值 `DEFAULT_SETTINGS`：`{ mode: 'STATS_ONLY', autoCaptureThresholdSeconds: 15, enableQualityUpgrade: true, archiveSubfolder: 'BiliMusic', groupMultiPartInSubdir: true, audioMimeType: 'audio/x-m4a', enablePlayerSync: true, playerApiOrigin: 'http://127.0.0.1:19527' }`（默认开启“仅听歌统计 + 按需手动下载”，防止日常看普通视频误触发自动下载）。
 
 ---
 
@@ -34,7 +37,7 @@
 - **动作枚举 (`ACTION`)**：
   - Content ➔ SW：`TRACK_DETECTED`, `PLAY_HEARTBEAT`, `DASH_BLOB_READY`, `DASH_BLOB_FAILED`
   - SW ➔ Content：`FETCH_DASH_BLOB`, `REVOKE_BLOB_URL`
-  - Popup ⇄ SW：`GET_POPUP_STATE`, `POPUP_STATE_UPDATED`, `SET_WORK_MODE`, `UPDATE_SETTINGS`, `MANUAL_DOWNLOAD`, `GET_LEADERBOARD`, `CLEAR_STATS`
+  - Popup ⇄ SW：`GET_POPUP_STATE`, `POPUP_STATE_UPDATED`, `SET_WORK_MODE`, `UPDATE_SETTINGS`, `MANUAL_DOWNLOAD`, `GET_LEADERBOARD`, `CLEAR_STATS`, `SYNC_PLAYER_NOW`, `GET_PLAYER_SYNC_STATUS`
 - **路由器与发送封装**：`isEnvelopeFor`, `createMessageRouter`, `sendToBackground`, `notifyPopup`, `sendToTab`。
 
 ---

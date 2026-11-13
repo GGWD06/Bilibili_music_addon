@@ -118,6 +118,11 @@ export function openDatabase(idbFactory) {
  */
 function buildMergedTrack(existing, meta, now) {
   const trackKey = makeTrackKey(meta.bvid, meta.cid);
+  const biliPlayCount = existing?.biliPlayCount ?? existing?.playCount ?? 0;
+  const biliPlayedSeconds = existing?.biliPlayedSeconds ?? existing?.totalPlayedSeconds ?? 0;
+  const playerPlayCount = existing?.playerPlayCount || 0;
+  const playerPlayedSeconds = existing?.playerPlayedSeconds || 0;
+
   const base = existing || {
     trackKey,
     bvid: String(meta.bvid),
@@ -128,6 +133,10 @@ function buildMergedTrack(existing, meta, now) {
     part: null,
     owner: '',
     cover: null,
+    biliPlayCount: 0,
+    biliPlayedSeconds: 0,
+    playerPlayCount: 0,
+    playerPlayedSeconds: 0,
     playCount: 0,
     totalPlayedSeconds: 0,
     firstPlayedAt: now,
@@ -149,6 +158,12 @@ function buildMergedTrack(existing, meta, now) {
     part: meta.part !== undefined ? meta.part : base.part,
     owner: meta.owner || base.owner || '',
     cover: meta.cover || base.cover || null,
+    biliPlayCount,
+    biliPlayedSeconds,
+    playerPlayCount,
+    playerPlayedSeconds,
+    playCount: biliPlayCount + playerPlayCount,
+    totalPlayedSeconds: Number((biliPlayedSeconds + playerPlayedSeconds).toFixed(2)),
   };
 }
 
@@ -202,11 +217,13 @@ export async function recordPlayProgress(params, idbFactory) {
 
   const existing = await reqToPromise(trackStore.get(trackKey));
   const updated = buildMergedTrack(existing, trackMeta, now);
-  updated.totalPlayedSeconds = Number(((updated.totalPlayedSeconds || 0) + delta).toFixed(2));
+  updated.biliPlayedSeconds = Number(((updated.biliPlayedSeconds ?? updated.totalPlayedSeconds ?? 0) + delta).toFixed(2));
   updated.lastPlayedAt = now;
   if (incrementPlayCount) {
-    updated.playCount = (updated.playCount || 0) + 1;
+    updated.biliPlayCount = (updated.biliPlayCount ?? updated.playCount ?? 0) + 1;
   }
+  updated.playCount = (updated.biliPlayCount || 0) + (updated.playerPlayCount || 0);
+  updated.totalPlayedSeconds = Number(((updated.biliPlayedSeconds || 0) + (updated.playerPlayedSeconds || 0)).toFixed(2));
   trackStore.put(updated);
 
   if (delta > 0) {
@@ -390,6 +407,61 @@ export async function getLeaderboard(options = {}, idbFactory) {
 }
 
 /**
+ * 读取曲库中的全部曲目记录。
+ * @param {IDBFactory} [idbFactory]
+ * @returns {Promise<Array<object>>}
+ */
+export async function getAllTracks(idbFactory) {
+  const db = await openDatabase(idbFactory);
+  const tx = db.transaction(STORE_TRACKS, 'readonly');
+  const tracks = await reqToPromise(tx.objectStore(STORE_TRACKS).getAll());
+  await txDone(tx);
+  return Array.isArray(tracks) ? tracks : [];
+}
+
+/**
+ * 合并来自桌面配套播放器的曲目播放统计与元数据，并重算跨端汇总次数与时长。
+ * @param {Array<object>} playerTracks
+ * @param {IDBFactory} [idbFactory]
+ * @returns {Promise<Array<object>>}
+ */
+export async function mergeTracksFromPlayer(playerTracks, idbFactory) {
+  if (!Array.isArray(playerTracks) || playerTracks.length === 0) return [];
+  const db = await openDatabase(idbFactory);
+  const tx = db.transaction(STORE_TRACKS, 'readwrite');
+  const store = tx.objectStore(STORE_TRACKS);
+  const mergedResults = [];
+
+  for (const pt of playerTracks) {
+    if (!pt || !pt.bvid || !pt.cid) continue;
+    const trackKey = makeTrackKey(pt.bvid, pt.cid);
+    const existing = await reqToPromise(store.get(trackKey));
+    const base = buildMergedTrack(existing, pt, pt.lastPlayedAt || Date.now());
+
+    const playerCount = Math.max(base.playerPlayCount || 0, Number(pt.playerPlayCount) || 0);
+    const playerSeconds = Math.max(base.playerPlayedSeconds || 0, Number(pt.playerPlayedSeconds) || 0);
+    const biliCount = Math.max(base.biliPlayCount || 0, Number(pt.biliPlayCount) || 0);
+    const biliSeconds = Math.max(base.biliPlayedSeconds || 0, Number(pt.biliPlayedSeconds) || 0);
+
+    const updated = {
+      ...base,
+      biliPlayCount: biliCount,
+      biliPlayedSeconds: Number(biliSeconds.toFixed(2)),
+      playerPlayCount: playerCount,
+      playerPlayedSeconds: Number(playerSeconds.toFixed(2)),
+      playCount: biliCount + playerCount,
+      totalPlayedSeconds: Number((biliSeconds + playerSeconds).toFixed(2)),
+      lastPlayedAt: Math.max(base.lastPlayedAt || 0, Number(pt.lastPlayedAt) || 0) || Date.now(),
+    };
+    store.put(updated);
+    mergedResults.push(updated);
+  }
+
+  await txDone(tx);
+  return mergedResults;
+}
+
+/**
  * 仅清空听歌流水与播放计数，保留 tracks 表中的已下载归档与音质记录避免重复下载。
  * @param {IDBFactory} [idbFactory]
  * @returns {Promise<void>}
@@ -404,7 +476,15 @@ export async function clearListeningStats(idbFactory) {
   const allTracks = await reqToPromise(trackStore.getAll());
   for (const t of allTracks) {
     if (t.downloadId != null) {
-      trackStore.put({ ...t, playCount: 0, totalPlayedSeconds: 0 });
+      trackStore.put({
+        ...t,
+        biliPlayCount: 0,
+        biliPlayedSeconds: 0,
+        playerPlayCount: 0,
+        playerPlayedSeconds: 0,
+        playCount: 0,
+        totalPlayedSeconds: 0,
+      });
     } else {
       trackStore.delete(t.trackKey);
     }

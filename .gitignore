@@ -1,0 +1,12 @@
+# Local runtime player database & temporary atomic writes
+player/data/
+*.tmp
+
+# Node / OS / Editor artifacts
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.env
+.env.*

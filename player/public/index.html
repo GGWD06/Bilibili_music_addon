@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BiliMusic 桌面音乐播放器</title>
+  <link rel="icon" href="/assets/icons/icon-48.png" />
+  <link rel="stylesheet" href="/player.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <div class="workspace">
+      <!-- 左侧导航栏 -->
+      <aside class="sidebar">
+        <div class="brand-box">
+          <img class="brand-logo" src="/assets/icons/icon-48.png" alt="BiliMusic" />
+          <div class="brand-meta">
+            <h1 class="brand-title">BiliMusic</h1>
+            <span class="brand-sub">独立桌面播放器</span>
+          </div>
+        </div>
+
+        <div class="sync-panel">
+          <div class="sync-status-row">
+            <span id="sync-status-dot" class="sync-dot"></span>
+            <span id="sync-status-text" class="sync-label">等待插件联动</span>
+          </div>
+          <button id="btn-rescan" type="button" class="btn-ghost btn-sm" title="扫描本地下载目录">刷新曲库</button>
+        </div>
+
+        <nav class="nav-section" aria-label="音乐库视图">
+          <div class="nav-heading">音乐库</div>
+          <button type="button" class="nav-item is-active" data-view="all">
+            <span class="nav-icon">♫</span>
+            <span class="nav-text">全部音乐</span>
+            <span id="count-all" class="nav-badge mono">0</span>
+          </button>
+          <button type="button" class="nav-item" data-view="favorites">
+            <span class="nav-icon">♥</span>
+            <span class="nav-text">我喜欢的音乐</span>
+            <span id="count-fav" class="nav-badge mono">0</span>
+          </button>
+          <button type="button" class="nav-item" data-view="leaderboard">
+            <span class="nav-icon">★</span>
+            <span class="nav-text">听歌排行榜</span>
+          </button>
+        </nav>
+
+        <section class="nav-section playlists-section" aria-label="我的歌单">
+          <div class="nav-heading-row">
+            <span class="nav-heading">自定义歌单</span>
+            <button id="btn-new-playlist" type="button" class="btn-link">+ 新建</button>
+          </div>
+
+          <form id="playlist-form" class="playlist-form is-hidden">
+            <input id="playlist-name-input" type="text" maxlength="40" placeholder="输入歌单名称..." class="input-dark" />
+            <div class="playlist-form-actions">
+              <button id="btn-playlist-save" type="submit" class="btn-primary btn-xs">保存</button>
+              <button id="btn-playlist-cancel" type="button" class="btn-ghost btn-xs">取消</button>
+            </div>
+          </form>
+
+          <ul id="playlist-nav-list" class="playlist-nav-list"></ul>
+        </section>
+      </aside>
+
+      <!-- 中间主工作区 -->
+      <main class="main-area">
+        <header class="main-header">
+          <div class="header-title-group">
+            <h2 id="view-title" class="view-title">全部音乐</h2>
+            <span id="view-subtitle" class="view-subtitle">0 首本地曲目</span>
+          </div>
+
+          <div class="header-actions">
+            <button id="btn-play-all" type="button" class="btn-primary btn-sm">▶ 顺序播放</button>
+            <button id="btn-shuffle-list" type="button" class="btn-accent btn-sm">🔀 列表随机播放</button>
+            <button id="btn-shuffle-all" type="button" class="btn-secondary btn-sm">🎲 全部音乐随机</button>
+            <div class="search-wrap">
+              <input id="search-input" type="search" placeholder="搜索歌名 / UP主 / BV号..." class="input-dark search-input" />
+            </div>
+            <button id="btn-toggle-settings" type="button" class="btn-ghost btn-sm" title="播放器设置">⚙ 设置</button>
+          </div>
+        </header>
+
+        <!-- 可折叠设置面板 -->
+        <section id="settings-panel" class="settings-drawer is-hidden">
+          <div class="settings-grid">
+            <label class="setting-field" for="setting-music-dirs">
+              <span class="setting-label">本地音乐扫描目录（每行一个路径，自动实时监听）</span>
+              <textarea id="setting-music-dirs" rows="2" class="input-dark setting-textarea mono"></textarea>
+            </label>
+            <div class="setting-side">
+              <label class="setting-field" for="setting-threshold">
+                <span class="setting-label">有效播放计数阈值 (秒)</span>
+                <input id="setting-threshold" type="number" min="3" max="300" step="1" class="input-dark mono" />
+              </label>
+              <button id="btn-save-settings" type="button" class="btn-primary btn-sm">保存并重新扫描</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 曲目列表视图 -->
+        <section id="view-tracks" class="content-panel is-active">
+          <div id="tracks-empty" class="empty-state is-hidden">
+            <div class="empty-icon">♫</div>
+            <h3 class="empty-title">当前列表暂无曲目</h3>
+            <p class="empty-desc">使用 BiliMusic Chrome 插件下载歌曲至 Downloads/BiliMusic 文件夹后，这里会自动扫描入库并与网页端播放统计双向联动。</p>
+          </div>
+
+          <div class="table-scroll">
+            <table class="tracks-table">
+              <thead>
+                <tr>
+                  <th class="col-idx">#</th>
+                  <th class="col-title">曲目 / 分P</th>
+                  <th class="col-quality">音质</th>
+                  <th class="col-owner">UP主</th>
+                  <th class="col-plays">联动播放次数 (网页+软件)</th>
+                  <th class="col-dur">总时长</th>
+                  <th class="col-ops">操作</th>
+                </tr>
+              </thead>
+              <tbody id="track-list-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 听歌排行榜视图 -->
+        <section id="view-leaderboard" class="content-panel">
+          <div class="kpi-grid">
+            <div class="kpi-box">
+              <span class="kpi-label">已统计曲目</span>
+              <strong id="lb-kpi-tracks" class="kpi-val mono">0</strong>
+            </div>
+            <div class="kpi-box">
+              <span class="kpi-label">总播放次数 (网页+软件)</span>
+              <strong id="lb-kpi-total-plays" class="kpi-val mono">0</strong>
+            </div>
+            <div class="kpi-box">
+              <span class="kpi-label">桌面播放器统计</span>
+              <strong id="lb-kpi-player-stats" class="kpi-val mono">0 次 · 0m</strong>
+            </div>
+            <div class="kpi-box">
+              <span class="kpi-label">B站网页端统计</span>
+              <strong id="lb-kpi-bili-stats" class="kpi-val mono">0 次 · 0m</strong>
+            </div>
+          </div>
+
+          <div class="lb-toolbar">
+            <div class="source-pills" role="group" aria-label="统计端筛选">
+              <button type="button" class="source-btn is-active" data-source="all">综合总榜</button>
+              <button type="button" class="source-btn" data-source="player">播放器软件</button>
+              <button type="button" class="source-btn" data-source="bili">B站网页端</button>
+            </div>
+            <select id="lb-sort" class="input-dark select-sm" aria-label="排行榜排序">
+              <option value="totalPlayCount">按播放次数</option>
+              <option value="totalPlayedSeconds">按累计时长</option>
+              <option value="lastPlayedAt">按最近播放</option>
+            </select>
+          </div>
+
+          <div id="lb-empty" class="empty-state is-hidden">
+            <div class="empty-icon">★</div>
+            <h3 class="empty-title">暂无听歌排行数据</h3>
+            <p class="empty-desc">在桌面播放器中听歌，或通过 BiliMusic Chrome 插件同步网页端记录后，将在此生成跨端排行榜。</p>
+          </div>
+
+          <ul id="lb-list" class="lb-list"></ul>
+        </section>
+      </main>
+
+      <!-- 右侧播放队列抽屉 -->
+      <aside id="queue-drawer" class="queue-drawer is-hidden">
+        <div class="queue-header">
+          <div>
+            <h3 class="queue-title">当前播放队列</h3>
+            <span id="queue-mode-label" class="queue-sub">列表循环</span>
+          </div>
+          <div class="queue-header-ops">
+            <span id="queue-count" class="nav-badge mono">0</span>
+            <button id="btn-reshuffle-queue" type="button" class="btn-ghost btn-xs" title="重新洗牌">洗牌</button>
+            <button id="btn-close-queue" type="button" class="btn-ghost btn-xs" title="收起队列">✕</button>
+          </div>
+        </div>
+        <ul id="queue-list" class="queue-list"></ul>
+      </aside>
+    </div>
+
+    <!-- 底部播放控制栏 -->
+    <footer class="player-bar">
+      <div class="now-playing">
+        <div class="now-cover-wrap">
+          <img id="now-cover" class="now-cover is-hidden" alt="封面" referrerpolicy="no-referrer" />
+          <div id="now-cover-fallback" class="now-cover-fallback">♫</div>
+        </div>
+        <div class="now-meta">
+          <div class="now-title-row">
+            <span id="now-title" class="now-title">未选择曲目</span>
+            <span id="now-quality" class="pill pill-muted is-hidden"></span>
+          </div>
+          <div class="now-sub-row">
+            <span id="now-owner" class="now-owner">选择任意本地歌曲开始播放</span>
+            <span id="now-stats-pill" class="now-stats mono is-hidden"></span>
+          </div>
+        </div>
+        <button id="btn-now-fav" type="button" class="btn-icon" title="收藏到我喜欢" disabled>♡</button>
+      </div>
+
+      <div class="transport">
+        <div class="transport-controls">
+          <button id="btn-play-mode" type="button" class="btn-mode" title="切换播放模式">🔁 列表循环</button>
+          <button id="btn-prev" type="button" class="btn-ctrl" title="上一首">⏮</button>
+          <button id="btn-play-pause" type="button" class="btn-play" title="播放 / 暂停">▶</button>
+          <button id="btn-next" type="button" class="btn-ctrl" title="下一首">⏭</button>
+          <button id="btn-playback-rate" type="button" class="btn-rate mono" title="切换倍速">1.0x</button>
+        </div>
+        <div class="seek-row">
+          <span id="time-current" class="time-label mono">00:00</span>
+          <input id="seek-bar" type="range" min="0" max="100" step="0.1" value="0" class="range-bar" aria-label="播放进度" />
+          <span id="time-total" class="time-label mono">00:00</span>
+        </div>
+      </div>
+
+      <div class="bar-right">
+        <button id="btn-mute" type="button" class="btn-icon" title="静音">🔊</button>
+        <input id="volume-bar" type="range" min="0" max="1" step="0.02" value="0.85" class="range-bar volume-bar" aria-label="音量" />
+        <button id="btn-toggle-queue" type="button" class="btn-ghost btn-sm" title="展开/收起播放队列">队列</button>
+      </div>
+    </footer>
+
+    <!-- 加入歌单浮动菜单 -->
+    <div id="playlist-picker-popover" class="popover is-hidden" role="dialog" aria-label="添加到歌单">
+      <div class="popover-title">添加到歌单</div>
+      <ul id="playlist-picker-list" class="popover-list"></ul>
+    </div>
+
+    <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>
+    <audio id="audio-el" preload="metadata"></audio>
+  </div>
+
+  <script type="module" src="/player.js"></script>
+</body>
+</html>

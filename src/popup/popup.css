@@ -830,3 +830,63 @@ body {
   border-color: rgba(248, 81, 73, 0.55);
   color: #ff948d;
 }
+
+/* ---- Desktop Player Sync Card ---- */
+.sync-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.sync-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-gray);
+  flex-shrink: 0;
+}
+
+.sync-dot.is-online {
+  background: #46c860;
+  box-shadow: 0 0 8px rgba(70, 200, 96, 0.55);
+}
+
+.sync-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-sync {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-sync:hover:not(:disabled) {
+  border-color: var(--accent-pink);
+  color: var(--accent-pink);
+}
+
+.btn-sync:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

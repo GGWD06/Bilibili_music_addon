@@ -48,6 +48,8 @@ export const ACTION = Object.freeze({
   MANUAL_DOWNLOAD: 'MANUAL_DOWNLOAD',
   GET_LEADERBOARD: 'GET_LEADERBOARD',
   CLEAR_STATS: 'CLEAR_STATS',
+  SYNC_PLAYER_NOW: 'SYNC_PLAYER_NOW',
+  GET_PLAYER_SYNC_STATUS: 'GET_PLAYER_SYNC_STATUS',
 });
 
 /** Storage 存储键常量 */
@@ -55,6 +57,7 @@ export const STORAGE_KEYS = Object.freeze({
   SETTINGS: 'settings',
   TAB_STATES: 'tabStates',
   PENDING_DOWNLOADS: 'pendingDownloads',
+  PLAYER_SYNC_STATE: 'playerSyncState',
 });
 
 /** 用户默认持久化偏好设置（默认仅统计，避免刷普通视频时误触发自动下载） */
@@ -65,6 +68,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   archiveSubfolder: 'BiliMusic',
   groupMultiPartInSubdir: true,
   audioMimeType: 'audio/x-m4a',
+  enablePlayerSync: true,
+  playerApiOrigin: 'http://127.0.0.1:19527',
 });
 
 /** 三态工作模式对应的 UI 提示与徽章配置 */

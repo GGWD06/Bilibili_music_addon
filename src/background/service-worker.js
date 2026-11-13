@@ -25,6 +25,7 @@ import {
 } from '../common/db.js';
 import { evaluateDownloadCandidate } from './preflight.js';
 import { createDownloader } from './downloader.js';
+import { createPlayerSyncClient } from './player-sync.js';
 
 /** 串行化 session 状态写入，避免并发心跳与探测互相覆盖 */
 let sessionWriteChain = Promise.resolve();
@@ -112,26 +113,51 @@ async function resolveTargetTabId(explicitTabId) {
   return tabs[0] && Number.isInteger(tabs[0].id) ? tabs[0].id : null;
 }
 
+/** 桌面配套播放器同步客户端 */
+export const playerSync = createPlayerSyncClient();
+
 /** 全局下载调度器实例（动态读取 chrome.downloads / chrome.storage.session 便于单测注入） */
 export const downloader = createDownloader({
   onStatusUpdate: async (tabId, trackKey, patch) => {
     if (!Number.isInteger(tabId) || tabId < 0) return;
     let updatedCurrent = false;
+    let latestTabState = null;
     await updateTabState(tabId, (prev) => {
       if (!prev || prev.trackKey !== trackKey) return prev;
       updatedCurrent = true;
-      return {
+      latestTabState = {
         ...prev,
         ...patch,
         trackStats: patch.trackStats ? { ...prev.trackStats, ...patch.trackStats } : prev.trackStats,
         updatedAt: Date.now(),
       };
+      return latestTabState;
     });
     if (
       !updatedCurrent &&
       (patch.downloadStatus === DOWNLOAD_STATUS.COMPLETED || patch.downloadStatus === DOWNLOAD_STATUS.UPGRADED)
     ) {
       notifyPopup(ACTION.POPUP_STATE_UPDATED, { downloadCompletedTrackKey: trackKey });
+    }
+    if (patch.downloadStatus === DOWNLOAD_STATUS.COMPLETED || patch.downloadStatus === DOWNLOAD_STATUS.UPGRADED) {
+      Promise.resolve()
+        .then(async () => {
+          const settings = await getSettings();
+          const trackRecord = await getTrack(trackKey);
+          if (trackRecord) {
+            await playerSync.pushEvent('DOWNLOAD_COMPLETED', { track: trackRecord }, settings);
+          } else if (latestTabState?.meta) {
+            await playerSync.pushEvent('DOWNLOAD_COMPLETED', {
+              track: {
+                ...latestTabState.meta,
+                trackKey,
+                qualityId: patch.trackStats?.downloadedQualityId ?? null,
+                filename: patch.trackStats?.filename ?? null,
+              },
+            }, settings);
+          }
+        })
+        .catch(() => {});
     }
   },
 });
@@ -247,13 +273,21 @@ export async function handleTrackDetected(payload, sender) {
         sessionCounted: sameSession ? Boolean(prev.sessionCounted) : false,
         trackStats: {
           playCount: dbTrack ? dbTrack.playCount || 0 : 0,
+          biliPlayCount: dbTrack ? dbTrack.biliPlayCount ?? dbTrack.playCount ?? 0 : 0,
+          playerPlayCount: dbTrack ? dbTrack.playerPlayCount || 0 : 0,
           totalPlayedSeconds: dbTrack ? dbTrack.totalPlayedSeconds || 0 : 0,
+          biliPlayedSeconds: dbTrack ? dbTrack.biliPlayedSeconds ?? dbTrack.totalPlayedSeconds ?? 0 : 0,
+          playerPlayedSeconds: dbTrack ? dbTrack.playerPlayedSeconds || 0 : 0,
           downloadedQualityId: dbTrack ? dbTrack.qualityId : null,
           filename: dbTrack ? dbTrack.filename : null,
         },
         updatedAt: Date.now(),
       };
     });
+
+    if (dbTrack) {
+      playerSync.pushEvent('TRACK_DETECTED', { track: dbTrack }, settings).catch(() => {});
+    }
 
     if (
       settings.mode === WORK_MODE.AUTO_CAPTURE &&
@@ -333,13 +367,41 @@ export async function handlePlayHeartbeat(payload, sender) {
         sessionCounted: Boolean(alreadyCounted || incrementPlayCount),
         trackStats: {
           playCount: updatedDb.playCount || 0,
+          biliPlayCount: updatedDb.biliPlayCount ?? updatedDb.playCount ?? 0,
+          playerPlayCount: updatedDb.playerPlayCount || 0,
           totalPlayedSeconds: updatedDb.totalPlayedSeconds || 0,
+          biliPlayedSeconds: updatedDb.biliPlayedSeconds ?? updatedDb.totalPlayedSeconds ?? 0,
+          playerPlayedSeconds: updatedDb.playerPlayedSeconds || 0,
           downloadedQualityId: updatedDb.qualityId ?? null,
           filename: updatedDb.filename ?? null,
         },
         updatedAt: Date.now(),
       };
     });
+
+    playerSync
+      .pushEvent('PLAY_HEARTBEAT', { track: updatedDb, incrementPlayCount, deltaSeconds }, settings)
+      .then((syncRes) => {
+        if (syncRes?.ok && syncRes.track) {
+          updateTabState(tabId, (prev) => {
+            if (!prev || prev.trackKey !== trackKey) return prev;
+            return {
+              ...prev,
+              trackStats: {
+                ...prev.trackStats,
+                playCount: syncRes.track.playCount || 0,
+                biliPlayCount: syncRes.track.biliPlayCount || 0,
+                playerPlayCount: syncRes.track.playerPlayCount || 0,
+                totalPlayedSeconds: syncRes.track.totalPlayedSeconds || 0,
+                biliPlayedSeconds: syncRes.track.biliPlayedSeconds || 0,
+                playerPlayedSeconds: syncRes.track.playerPlayedSeconds || 0,
+              },
+              updatedAt: Date.now(),
+            };
+          }).catch(() => {});
+        }
+      })
+      .catch(() => {});
 
     let downloadTrigger = null;
     if (reachedThresholdNow && settings.mode === WORK_MODE.AUTO_CAPTURE) {
@@ -364,13 +426,59 @@ export async function handleGetPopupState(payload) {
   const states = await getTabStates();
   const tabState = tabId != null ? states[tabId] || null : null;
   const dbTrack = tabState?.trackKey ? await getTrack(tabState.trackKey) : null;
+  const playerSyncState = await playerSync.readSyncState();
 
   return {
     settings,
     tabId,
     tabState,
     dbTrack,
+    playerSyncState,
   };
+}
+
+/** 探测桌面配套播放器在线状态 */
+export async function handleGetPlayerSyncStatus() {
+  const settings = await getSettings();
+  const syncState = await playerSync.getStatus(settings);
+  notifyPopup(ACTION.POPUP_STATE_UPDATED, { playerSyncState: syncState });
+  return { ok: true, syncState };
+}
+
+/** 立即执行插件与桌面配套播放器的双向全量同步 */
+export async function handleSyncPlayerNow() {
+  const settings = await getSettings();
+  const res = await playerSync.syncFull(settings);
+  if (res.ok) {
+    const tabId = await resolveTargetTabId();
+    if (Number.isInteger(tabId)) {
+      const states = await getTabStates();
+      const currentTab = states[tabId];
+      if (currentTab?.trackKey) {
+        const refreshed = await getTrack(currentTab.trackKey);
+        if (refreshed) {
+          await updateTabState(tabId, (prev) => {
+            if (!prev || prev.trackKey !== currentTab.trackKey) return prev;
+            return {
+              ...prev,
+              trackStats: {
+                ...prev.trackStats,
+                playCount: refreshed.playCount || 0,
+                biliPlayCount: refreshed.biliPlayCount || 0,
+                playerPlayCount: refreshed.playerPlayCount || 0,
+                totalPlayedSeconds: refreshed.totalPlayedSeconds || 0,
+                biliPlayedSeconds: refreshed.biliPlayedSeconds || 0,
+                playerPlayedSeconds: refreshed.playerPlayedSeconds || 0,
+              },
+              updatedAt: Date.now(),
+            };
+          });
+        }
+      }
+    }
+    notifyPopup(ACTION.POPUP_STATE_UPDATED, { playerSyncState: res.syncState });
+  }
+  return res;
 }
 
 /** 切换三态工作模式 */
@@ -446,6 +554,8 @@ export const messageRouter = createMessageRouter(MSG_TARGET.BACKGROUND, {
   [ACTION.DASH_BLOB_FAILED]: (payload, sender) => downloader.handleDashBlobFailed(payload, sender),
   [ACTION.GET_LEADERBOARD]: (payload) => getLeaderboard(payload || {}),
   [ACTION.CLEAR_STATS]: handleClearStats,
+  [ACTION.GET_PLAYER_SYNC_STATUS]: handleGetPlayerSyncStatus,
+  [ACTION.SYNC_PLAYER_NOW]: handleSyncPlayerNow,
 });
 
 if (typeof chrome !== 'undefined' && chrome.runtime) {
